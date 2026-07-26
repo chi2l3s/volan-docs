@@ -1,0 +1,105 @@
+---
+title: "Deleting Records with Volan's Write API"
+sidebarTitle: "Delete"
+description: "Learn how to delete single or multiple records with Volan's delete and deleteMany operations, including cascade behaviour and safety considerations."
+---
+
+Volan provides two delete operations: `delete` for removing a single known record, and `deleteMany` for removing all rows that match a filter. Both operations integrate with the cascade rules declared in your schema, so related records are cleaned up consistently without extra application code.
+
+## Deleting a single record
+
+Use `db.<model>.delete {}` to remove one row by a unique filter and receive the deleted entity back. Returning the entity lets you confirm exactly what was removed — useful for audit logging or post-delete cleanup.
+
+<CodeGroup>
+```kotlin Kotlin
+val user = db.user.delete {
+    where { id eq 42 }
+}
+// `user` holds the entity as it was immediately before deletion
+```
+
+```java Java
+User user = db.user().delete(d -> d
+    .where(w -> w.id().eq(42))
+);
+```
+</CodeGroup>
+
+### Throws when the record is not found
+
+If the `where {}` filter matches no row, `delete` throws `VolanNotFoundException`. This keeps your code honest: a missing record is treated as an exceptional condition rather than a silent no-op.
+
+<Warning>
+  Handle `VolanNotFoundException` wherever a record's existence is not guaranteed, such as when the ID comes from user input or an external system.
+</Warning>
+
+---
+
+## Deleting many records
+
+`deleteMany {}` removes every row that matches the `where {}` filter and returns the number of deleted rows as a `Long`.
+
+```kotlin
+val count = db.user.deleteMany {
+    where { createdAt lt Instant.now().minus(30, ChronoUnit.DAYS) }
+}
+// count == number of rows deleted
+```
+
+<Warning>
+  Omitting the `where {}` block, or providing a filter that matches every row, will delete **all records in the table**. Always double-check your filter with a `findMany` query before running a broad `deleteMany` in production.
+</Warning>
+
+### Scoping your filter safely
+
+The `where {}` block supports the full range of filter operators available in `findMany`: equality, comparisons, date ranges, logical combinators, and relation filters. A common pattern is to preview the rows you intend to remove before committing the delete:
+
+```kotlin
+// 1. Preview — same filter, no mutation
+val affected = db.user.findMany {
+    where { createdAt lt Instant.now().minus(30, ChronoUnit.DAYS) }
+}
+println("About to delete ${affected.size} users")
+
+// 2. Delete only when confirmed
+val count = db.user.deleteMany {
+    where { createdAt lt Instant.now().minus(30, ChronoUnit.DAYS) }
+}
+```
+
+---
+
+## Cascade deletes
+
+When your schema declares `onDelete: Cascade` on a relation, the database automatically removes dependent rows when the parent is deleted. Volan respects this behaviour — you don't write any extra delete calls for the child models.
+
+```prisma
+model Post {
+  id       Int  @id @default(autoIncrement())
+  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  authorId Int
+}
+```
+
+With the above schema, deleting a `User` record also deletes all of their `Post` records in the same database operation.
+
+<Note>
+  Cascade behaviour is enforced by the database, not by Volan's runtime. If you're using a database that doesn't support foreign-key constraints (or if constraints are disabled), cascades will not fire. Check your migration output to confirm the constraint was created.
+</Note>
+
+<Tip>
+  For complex cleanup logic that cascades can't express — such as deleting records across multiple unrelated models — wrap your deletes in a [transaction](/writing/transactions) to keep them atomic.
+</Tip>
+
+---
+
+## Quick reference
+
+<CardGroup cols={2}>
+  <Card title="delete {}" icon="trash">
+    Deletes one row matched by `where {}`. Returns the full entity as it was before deletion. Throws `VolanNotFoundException` if no row is found.
+  </Card>
+  <Card title="deleteMany {}" icon="trash-can">
+    Deletes all rows matched by `where {}`. Returns a `Long` row count. Omitting the filter deletes every row in the table.
+  </Card>
+</CardGroup>

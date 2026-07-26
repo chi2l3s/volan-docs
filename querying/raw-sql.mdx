@@ -1,0 +1,187 @@
+---
+title: "Raw SQL Queries and Execution in Volan"
+sidebarTitle: "Raw SQL"
+description: "Run hand-written SQL when the query builder isn't enough, with full parameterized binding, a typed Row accessor API, and safe execution for DML statements."
+---
+
+Volan's query builder covers the vast majority of everyday database operations, but some problems — complex analytical queries, database-specific functions, recursive CTEs, or bulk operations — are easier to express directly in SQL. For these cases Volan provides two escape hatches: `rawQuery` for `SELECT` statements that return rows, and `rawExecute` for `INSERT`, `UPDATE`, `DELETE`, and DDL statements that return an affected-row count.
+
+Both methods are available directly on the `db` client and are fully integrated with Volan's connection pool and transaction support.
+
+## `rawQuery`
+
+`rawQuery` executes a `SELECT` statement and maps each row to a value of your choice using a lambda. It returns a `List<T>` where `T` is whatever your mapping lambda returns.
+
+```kotlin
+val emails = db.rawQuery(
+    sql = "SELECT id, email FROM users WHERE email LIKE ?",
+    params = listOf("%@acme.com")
+) { row ->
+    row.getString("email")
+}
+// emails: List<String>
+```
+
+The mapping lambda receives a `Row` object. You call typed accessor methods on it to read individual columns — Volan handles the JDBC type conversion.
+
+### Mapping to a data class
+
+You can map each row to a data class or any other type:
+
+```kotlin
+data class UserSummary(val id: Int, val email: String)
+
+val summaries = db.rawQuery(
+    sql = "SELECT id, email FROM users ORDER BY created_at DESC LIMIT ?",
+    params = listOf(100)
+) { row ->
+    UserSummary(
+        id = row.getInt("id"),
+        email = row.getString("email")
+    )
+}
+// summaries: List<UserSummary>
+```
+
+### Complex queries
+
+```kotlin
+val stats = db.rawQuery(
+    sql = """
+        SELECT u.id, u.name, COUNT(p.id) AS post_count, SUM(p.views) AS total_views
+        FROM users u
+        LEFT JOIN posts p ON p.author_id = u.id AND p.draft = false
+        WHERE u.created_at >= ?
+        GROUP BY u.id, u.name
+        HAVING COUNT(p.id) > ?
+        ORDER BY total_views DESC
+    """.trimIndent(),
+    params = listOf(oneYearAgo, 0)
+) { row ->
+    mapOf(
+        "name" to row.getString("name"),
+        "posts" to row.getLong("post_count"),
+        "views" to row.getDecimalOrNull("total_views")
+    )
+}
+```
+
+## `rawExecute`
+
+`rawExecute` runs a statement that does not return rows and returns the number of rows affected as a `Long`.
+
+```kotlin
+val affected = db.rawExecute(
+    sql = "UPDATE users SET role = ? WHERE id = ?",
+    params = listOf("ADMIN", 42)
+)
+println("Rows updated: $affected")
+```
+
+```kotlin
+// Bulk soft-delete
+val deleted = db.rawExecute(
+    sql = "UPDATE posts SET deleted_at = NOW() WHERE author_id = ? AND draft = true",
+    params = listOf(userId)
+)
+```
+
+## SQL injection safety
+
+All parameters are passed as `?` placeholders and bound by the JDBC driver. **Never interpolate user input directly into the SQL string.** Volan does not perform any additional sanitisation — the safety guarantee comes entirely from parameterized binding.
+
+<Warning>
+  The following pattern is dangerous and must never be used:
+
+  ```kotlin
+  // ❌ DO NOT DO THIS
+  db.rawExecute("DELETE FROM users WHERE email = '$userInput'", emptyList())
+  ```
+
+  Always use the `params` list:
+
+  ```kotlin
+  // ✅ Safe — input is bound as a parameter
+  db.rawExecute("DELETE FROM users WHERE email = ?", listOf(userInput))
+  ```
+</Warning>
+
+## The `Row` accessor API
+
+The `Row` object passed to your `rawQuery` mapping lambda provides typed getter methods for every supported column type. Every method has a non-null variant that throws if the column value is `NULL`, and an `OrNull` variant that returns `null` instead.
+
+| Column type | Non-null accessor | Nullable accessor |
+|---|---|---|
+| `String` | `getString(column)` | `getStringOrNull(column)` |
+| `Int` | `getInt(column)` | `getIntOrNull(column)` |
+| `Long` | `getLong(column)` | `getLongOrNull(column)` |
+| `Float` | `getFloat(column)` | `getFloatOrNull(column)` |
+| `Double` | `getDouble(column)` | `getDoubleOrNull(column)` |
+| `BigDecimal` | `getDecimal(column)` | `getDecimalOrNull(column)` |
+| `Boolean` | `getBoolean(column)` | `getBooleanOrNull(column)` |
+| `Instant` | `getInstant(column)` | `getInstantOrNull(column)` |
+| `LocalDate` | `getLocalDate(column)` | `getLocalDateOrNull(column)` |
+| `LocalTime` | `getLocalTime(column)` | `getLocalTimeOrNull(column)` |
+| `UUID` | `getUuid(column)` | `getUuidOrNull(column)` |
+| `ByteArray` | `getBytes(column)` | `getBytesOrNull(column)` |
+| `JsonNode` | `getJson(column)` | `getJsonOrNull(column)` |
+
+The `column` parameter is always the **column alias as it appears in the result set** — either the physical column name or an alias you declared with `AS` in the SQL.
+
+```kotlin
+db.rawQuery(
+    sql = "SELECT created_at AS ts, score::float AS normalized_score FROM posts LIMIT ?",
+    params = listOf(10)
+) { row ->
+    row.getInstant("ts") to row.getFloatOrNull("normalized_score")
+}
+```
+
+<Note>
+  `getJson` returns a `JsonNode` from the Jackson `com.fasterxml.jackson.databind` library. Volan deserializes the raw JSON text from the database before handing it to your mapping lambda.
+</Note>
+
+## Raw SQL inside transactions
+
+`rawQuery` and `rawExecute` participate in Volan transactions automatically. Call them inside a `db.transaction { }` block to include them in the same connection and commit/rollback scope as your other Volan operations.
+
+```kotlin
+db.transaction {
+    val affected = rawExecute(
+        "UPDATE accounts SET balance = balance - ? WHERE id = ?",
+        listOf(amount, fromAccountId)
+    )
+    if (affected == 0L) throw InsufficientFundsException()
+
+    rawExecute(
+        "UPDATE accounts SET balance = balance + ? WHERE id = ?",
+        listOf(amount, toAccountId)
+    )
+}
+```
+
+## When to use raw SQL
+
+<CardGroup cols={2}>
+  <Card title="Use rawQuery when…" icon="circle-check">
+    - You need database-specific functions (e.g. `jsonb_agg`, `ST_Distance`, window functions)
+    - The query involves recursive CTEs or complex lateral joins
+    - You are migrating an existing query and want to preserve it verbatim during a transition period
+  </Card>
+  <Card title="Prefer the query builder when…" icon="thumbs-up">
+    - Filters, ordering, pagination, and relations cover your needs
+    - You want compile-time field-name safety
+    - You want the query to work across different database dialects without changes
+  </Card>
+</CardGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Reading" icon="database" href="/querying/reading">
+    Use the type-safe query builder for the most common fetch patterns.
+  </Card>
+  <Card title="Aggregation" icon="sigma" href="/querying/aggregation">
+    Use aggregate {} and groupBy {} for statistics without writing SQL.
+  </Card>
+</CardGroup>

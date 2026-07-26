@@ -1,0 +1,345 @@
+---
+title: "Volan Exception Hierarchy and Error Handling"
+sidebarTitle: "Exceptions"
+description: "Reference for every exception type in the Volan runtime, including when each is thrown, its properties, and recommended handling patterns."
+---
+
+Volan's runtime communicates all error conditions through a structured exception hierarchy rooted at `VolanException`. Because every exception extends `RuntimeException` you are never forced to declare `throws` clauses, but you should catch specific subtypes at appropriate boundaries in your application rather than catching the broad `VolanException` base class. This page describes every exception, the circumstances that trigger it, and how to handle it correctly.
+
+---
+
+## Hierarchy overview
+
+```
+RuntimeException
+└── VolanException
+    ├── VolanNotFoundException
+    ├── VolanRelationNotLoadedException
+    ├── VolanFieldNotSelectedException
+    ├── VolanConfigurationException
+    ├── VolanUnsupportedException
+    ├── VolanConstraintException
+    │   ├── VolanUniqueConstraintException
+    │   └── VolanForeignKeyException
+    ├── VolanConnectionException
+    ├── VolanTimeoutException
+    ├── VolanTransactionException
+    ├── VolanQueryException
+    ├── VolanValidationException
+    ├── VolanMappingException
+    ├── VolanAggregateNotAskedException
+    ├── VolanSchemaException
+    └── VolanGenerationException
+```
+
+---
+
+## Data-access exceptions
+
+These are the exceptions you are most likely to encounter in application code.
+
+### VolanNotFoundException
+
+Thrown when a query that expects exactly one result — `findFirstOrThrow`, `findUniqueOrThrow`, `update`, or `delete` — finds no matching row.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `model` | `String` | The name of the model that was queried |
+
+<CodeGroup>
+
+```kotlin Kotlin
+try {
+    val user = db.user.findUniqueOrThrow {
+        where { id eq userId }
+    }
+} catch (e: VolanNotFoundException) {
+    // e.model == "User"
+    throw ResponseStatusException(HttpStatus.NOT_FOUND, "${e.model} not found")
+}
+```
+
+```java Java
+try {
+    User user = db.user().findUniqueOrThrow(q ->
+        q.where(w -> w.id().eq(userId))
+    );
+} catch (VolanNotFoundException e) {
+    throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getModel() + " not found");
+}
+```
+
+</CodeGroup>
+
+<Tip>
+Prefer `findUnique` (returns `null` on miss) when absence is a normal outcome, and reserve `findUniqueOrThrow` for cases where a missing record is genuinely exceptional.
+</Tip>
+
+---
+
+### VolanUniqueConstraintException
+
+Thrown when an `INSERT` or `UPDATE` violates a unique index in the database. The exception carries the constraint name so you can tell which field or composite index was violated.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `constraint` | `String` | The database constraint name (e.g. `User_email_key`) |
+
+<CodeGroup>
+
+```kotlin Kotlin
+try {
+    val user = db.user.create {
+        data {
+            email = "alice@example.com"
+        }
+    }
+} catch (e: VolanUniqueConstraintException) {
+    // Inspect e.constraint to determine which field conflicted
+    logger.warn("Unique violation on {}", e.constraint)
+    throw DuplicateEmailException()
+}
+```
+
+```java Java
+try {
+    User user = db.user().create(c ->
+        c.data(d -> d.email("alice@example.com"))
+    );
+} catch (VolanUniqueConstraintException e) {
+    logger.warn("Unique violation on {}", e.getConstraint());
+    throw new DuplicateEmailException();
+}
+```
+
+</CodeGroup>
+
+---
+
+### VolanForeignKeyException
+
+Thrown when an operation violates a foreign key constraint — for example, inserting a row that references a non-existent parent, or deleting a parent row that still has children when `onDelete: Restrict`.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `constraint` | `String` | The database constraint name |
+
+---
+
+### VolanConstraintException
+
+The base class for constraint violations. Catch this if you want to handle both `VolanUniqueConstraintException` and `VolanForeignKeyException` with a single handler.
+
+---
+
+### VolanTransactionException
+
+Thrown when a transaction fails at the database level. The most important property is `retryable`: when `true`, the failure was caused by a serialization conflict and repeating the transaction with the same logic may succeed.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `retryable` | `Boolean` | `true` if the transaction can safely be retried |
+
+<CodeGroup>
+
+```kotlin Kotlin
+suspend fun createOrderWithRetry(input: OrderInput): Order {
+    repeat(3) { attempt ->
+        try {
+            return db.transaction {
+                // all writes in one atomic block
+                val order = order.create { data { /* … */ } }
+                orderLine.createMany { data(input.lines) }
+                order
+            }
+        } catch (e: VolanTransactionException) {
+            if (!e.retryable || attempt == 2) throw e
+            delay(50L * (attempt + 1))  // simple back-off
+        }
+    }
+    error("unreachable")
+}
+```
+
+```java Java
+Order createOrderWithRetry(OrderInput input) throws InterruptedException {
+    for (int attempt = 0; attempt < 3; attempt++) {
+        try {
+            return db.transaction(tx -> {
+                Order order = tx.order().create(c -> c.data(/* … */));
+                tx.orderLine().createMany(c -> c.data(input.getLines()));
+                return order;
+            });
+        } catch (VolanTransactionException e) {
+            if (!e.isRetryable() || attempt == 2) throw e;
+            Thread.sleep(50L * (attempt + 1));
+        }
+    }
+    throw new IllegalStateException("unreachable");
+}
+```
+
+</CodeGroup>
+
+<Warning>
+Only retry when `retryable == true`. A non-retryable `VolanTransactionException` indicates a permanent failure (e.g. a deadlock that cannot be resolved by retrying with the same data).
+</Warning>
+
+---
+
+### VolanQueryException
+
+Thrown for generic query execution errors that do not fall into a more specific category (e.g. a database syntax error propagated from an unsupported raw query, or an unexpected driver error).
+
+---
+
+### VolanValidationException
+
+Thrown before a query reaches the database when a required field was not set in a `create` or `update` call, or when the write specification is structurally invalid.
+
+---
+
+### VolanConnectionException
+
+Thrown when Volan cannot acquire a connection from the pool. This usually indicates the database is unreachable or the pool is exhausted.
+
+---
+
+### VolanTimeoutException
+
+Thrown when a connection acquisition or query execution exceeds the configured timeout.
+
+---
+
+## Lazy-access guard exceptions
+
+These exceptions protect you from silent data bugs caused by accessing data that was never loaded.
+
+### VolanRelationNotLoadedException
+
+Thrown when you access a relation field on a model instance that was not included in the `include {}` block of the originating query.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `model` | `String` | The model class name |
+| `relation` | `String` | The relation field name that was accessed |
+
+```kotlin
+// Query without including posts
+val user = db.user.findUnique { where { id eq 1 } }
+
+// ❌ throws VolanRelationNotLoadedException("User", "posts")
+println(user.posts)
+
+// ✅ include the relation
+val userWithPosts = db.user.findUnique {
+    where { id eq 1 }
+    include { posts() }
+}
+println(userWithPosts.posts)
+```
+
+<Note>
+Unlike Hibernate's lazy loading, Volan never silently issues a follow-up query. Accessing an unloaded relation always fails fast with this exception, eliminating the N+1 problem entirely.
+</Note>
+
+---
+
+### VolanFieldNotSelectedException
+
+Thrown when you access a field on a projection result that was not listed in the `select {}` block.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `model` | `String` | The model class name |
+| `field` | `String` | The field name that was accessed |
+
+```kotlin
+// Projection — only id and email are selected
+val partial = db.user.findUnique {
+    where { id eq 1 }
+    select { id(); email() }
+}
+
+// ❌ throws VolanFieldNotSelectedException("User", "name")
+println(partial.name)
+```
+
+---
+
+### VolanAggregateNotAskedException
+
+Thrown when you access an aggregate property (e.g. `_count`, `_sum`) on a result that did not request that aggregate.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `alias` | `String` | The aggregate alias that was accessed but not requested |
+
+---
+
+### VolanMappingException
+
+Thrown when a database row cannot be mapped to a generated model class — typically because an enum column contains a value that is not declared in the schema, or a required column is `NULL` in a row where the schema declares it non-nullable.
+
+---
+
+## Configuration and tooling exceptions
+
+These exceptions are typically encountered at startup or during development, not in steady-state production traffic.
+
+### VolanConfigurationException
+
+Thrown during client construction when the builder configuration is invalid — for example, a database URL is missing, an unknown model name is referenced, or conflicting options are set.
+
+```kotlin
+// Fails fast at startup with VolanConfigurationException
+val db = Volan.builder()
+    // .url("…")  ← forgot this
+    .build()
+```
+
+<Tip>
+Catch `VolanConfigurationException` in your application's startup sequence and surface it as a fatal error immediately, rather than discovering the misconfiguration on the first query.
+</Tip>
+
+---
+
+### VolanUnsupportedException
+
+Thrown when you call a feature that is recognised by the API but not yet implemented in the current version of Volan.
+
+---
+
+### VolanSchemaException
+
+Thrown by the schema compiler when your `.volan` file contains parse or validation errors. The exception wraps the full list of `Diagnostic` objects (see [Error Codes](/reference/error-codes)) so you can inspect every problem programmatically.
+
+---
+
+### VolanGenerationException
+
+Thrown by the code generator when it cannot produce valid output from an otherwise valid schema. This is rare and usually indicates a generator bug; please report it with the schema fragment that triggered it.
+
+---
+
+## General handling guidance
+
+<CardGroup cols={2}>
+
+<Card title="Catch specific subtypes" icon="bullseye">
+Always catch the most specific exception type you can handle meaningfully. Catching `VolanException` at an outer boundary is fine for logging, but inner catch blocks should target `VolanNotFoundException`, `VolanUniqueConstraintException`, etc.
+</Card>
+
+<Card title="Let configuration errors propagate" icon="circle-xmark">
+`VolanConfigurationException` and `VolanSchemaException` indicate programmer errors, not runtime conditions. Let them crash the application at startup rather than swallowing them.
+</Card>
+
+<Card title="Retry only serialization failures" icon="rotate">
+`VolanTransactionException` with `retryable == true` is the only exception that is safe to retry automatically. Add jitter and an attempt limit to any retry loop.
+</Card>
+
+<Card title="Treat lazy-access exceptions as bugs" icon="bug">
+`VolanRelationNotLoadedException` and `VolanFieldNotSelectedException` are programmer errors. Fix the query to include the required data rather than catching these in production code.
+</Card>
+
+</CardGroup>

@@ -1,0 +1,272 @@
+---
+title: "Filtering Queries in Volan: Operators and Combinators"
+sidebarTitle: "Filtering"
+description: "Master every filter operator Volan provides — from text matching and range comparisons to logical combinators and relation-based sub-filters."
+---
+
+Filters in Volan are expressed inside a `where { }` block that is available on every read method — `findMany`, `findFirst`, `findUnique`, `count`, `exists`, `aggregate`, and `groupBy`. The block is type-safe: only the operators that are valid for a given field's type are available, and the compiler rejects anything else.
+
+## Text field operators (`String`)
+
+String fields expose the following operators:
+
+| Operator | Description |
+|---|---|
+| `eq` | Exact match |
+| `notEq` | Not equal |
+| `oneOf` | Value is in the supplied list |
+| `notOneOf` | Value is not in the supplied list |
+| `isNull` | Field is `NULL` |
+| `isNotNull` | Field is not `NULL` |
+| `contains` | Substring match (`LIKE '%value%'`) |
+| `startsWith` | Prefix match (`LIKE 'value%'`) |
+| `endsWith` | Suffix match (`LIKE '%value'`) |
+
+Every text operator also has an `.ignoringCase()` variant that performs a case-insensitive comparison.
+
+```kotlin
+db.user.findMany {
+    where {
+        email endsWith "@acme.com"
+        name contains "alice" ignoringCase()
+        username startsWith "admin" ignoringCase()
+    }
+}
+```
+
+<Note>
+  Volan uses `oneOf` and `notOneOf` instead of `in` and `notIn` because `in` is a reserved keyword in Kotlin. The generated SQL still uses `IN (?, ?, ...)` under the hood.
+</Note>
+
+```kotlin
+// Matching several email domains at once
+db.user.findMany {
+    where {
+        email oneOf listOf("alice@acme.com", "bob@acme.com")
+    }
+}
+
+// Exclude suspended users by status
+db.user.findMany {
+    where {
+        status notOneOf listOf("SUSPENDED", "BANNED")
+    }
+}
+```
+
+## Ordered field operators (`Int`, `Long`, `Float`, `Double`, `Decimal`, `DateTime`, `Date`, `Time`, `Uuid`)
+
+Numeric and temporal fields support range comparisons in addition to the equality operators:
+
+| Operator | Description |
+|---|---|
+| `eq` | Equal |
+| `notEq` | Not equal |
+| `gt` | Greater than |
+| `gte` | Greater than or equal |
+| `lt` | Less than |
+| `lte` | Less than or equal |
+| `between` | Inclusive range (`BETWEEN ? AND ?`) |
+| `oneOf` | Value is in the supplied list |
+| `notOneOf` | Value is not in the supplied list |
+| `isNull` | Field is `NULL` |
+| `isNotNull` | Field is not `NULL` |
+
+```kotlin
+db.post.findMany {
+    where {
+        views gte 1000
+        createdAt between (thirtyDaysAgo to now)
+        score lt 4.5
+    }
+}
+```
+
+## Enum field operators
+
+Enum fields support `eq`, `notEq`, `oneOf`, `notOneOf`, `isNull`, and `isNotNull`.
+
+```kotlin
+db.user.findMany {
+    where {
+        role eq Role.ADMIN
+    }
+}
+
+db.user.findMany {
+    where {
+        role oneOf listOf(Role.ADMIN, Role.MODERATOR)
+    }
+}
+```
+
+## Boolean field operators
+
+Boolean fields support `eq`, `notEq`, `isNull`, and `isNotNull`.
+
+```kotlin
+db.post.findMany {
+    where {
+        draft eq false
+        featured eq true
+    }
+}
+```
+
+## Logical combinators
+
+By default, every condition you list inside `where { }` is joined with `AND`. Use the explicit combinators when you need more complex logic.
+
+### `and { }`
+
+Groups conditions with `AND`. Useful for readability or nesting inside an `or` block.
+
+```kotlin
+db.user.findMany {
+    where {
+        and {
+            role eq Role.ADMIN
+            createdAt gte oneYearAgo
+        }
+    }
+}
+```
+
+### `or { }`
+
+At least one of the nested conditions must be true.
+
+```kotlin
+db.user.findMany {
+    where {
+        or {
+            role eq Role.ADMIN
+            role eq Role.MODERATOR
+        }
+    }
+}
+```
+
+### `not { }`
+
+Negates the entire nested block.
+
+```kotlin
+db.user.findMany {
+    where {
+        not {
+            status eq "SUSPENDED"
+        }
+    }
+}
+```
+
+### Combining combinators
+
+Combinators nest freely, so you can express any boolean expression:
+
+```kotlin
+db.user.findMany {
+    where {
+        or {
+            and {
+                role eq Role.ADMIN
+                createdAt gte oneYearAgo
+            }
+            and {
+                role eq Role.MODERATOR
+                postCount gte 100
+            }
+        }
+        not {
+            email isNull()
+        }
+    }
+}
+```
+
+## Relation filters
+
+You can filter records based on the state of their related models without manually writing JOINs. Relation filters are available inside `where { }` under the relation's field name.
+
+### `some { }` — at least one related record matches
+
+```kotlin
+// Posts that have at least one tag named "kotlin"
+db.post.findMany {
+    where {
+        tags { some { name eq "kotlin" } }
+    }
+}
+```
+
+### `none { }` — no related records match
+
+```kotlin
+// Users who have no draft posts
+db.user.findMany {
+    where {
+        posts { none { draft eq true } }
+    }
+}
+```
+
+### `every { }` — all related records match
+
+```kotlin
+// Users where every post has been published
+db.user.findMany {
+    where {
+        posts { every { draft eq false } }
+    }
+}
+```
+
+### `matches { }` and `notMatches { }` — for to-one relations
+
+Use `matches` and `notMatches` on many-to-one or one-to-one relations (where the relation resolves to a single record rather than a list).
+
+```kotlin
+// Posts written by an admin
+db.post.findMany {
+    where {
+        author { matches { role eq Role.ADMIN } }
+    }
+}
+
+// Posts NOT written by a suspended user
+db.post.findMany {
+    where {
+        author { notMatches { status eq "SUSPENDED" } }
+    }
+}
+```
+
+<Note>
+  Volan uses `matches` / `notMatches` instead of `is` / `isNot` because `is` is a reserved keyword in Kotlin.
+</Note>
+
+## Java equivalent
+
+The same filter API is available in Java using lambda-style chaining:
+
+```java
+List<Post> posts = db.post().findMany(q -> q
+    .where(w -> w
+        .views().gte(1000)
+        .draft().eq(false)
+        .tags().some(t -> t.name().eq("kotlin"))
+    )
+);
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Ordering & Pagination" icon="arrow-down-wide-short" href="/querying/ordering-pagination">
+    Sort your filtered results and navigate them with offset or cursor pagination.
+  </Card>
+  <Card title="Relations" icon="diagram-project" href="/querying/relations">
+    Include related models alongside your main query results.
+  </Card>
+</CardGroup>

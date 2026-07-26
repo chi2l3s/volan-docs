@@ -1,0 +1,208 @@
+---
+title: "Sorting, Pagination, and Projections in Volan"
+sidebarTitle: "Ordering & Pagination"
+description: "Sort query results, paginate with offset or cursor strategies, deduplicate with distinct, and fetch partial records using select projections."
+---
+
+Once you have filtered down to the rows you care about, Volan gives you fine-grained control over how those rows are ordered, how many are returned at once, whether duplicates are collapsed, and which fields are included in the result objects. All of these capabilities live inside the same query builder lambda used by `findMany`, `findFirst`, `projectMany`, and `projectFirst`.
+
+## Ordering with `orderBy`
+
+The `orderBy { }` block accepts one or more field directives. Volan applies them as a multi-column `ORDER BY` clause in the order you list them.
+
+### Direction methods
+
+| Method | SQL equivalent |
+|---|---|
+| `asc()` | `ASC` |
+| `desc()` | `DESC` |
+| `ascNullsFirst()` | `ASC NULLS FIRST` |
+| `ascNullsLast()` | `ASC NULLS LAST` |
+| `descNullsFirst()` | `DESC NULLS FIRST` |
+| `descNullsLast()` | `DESC NULLS LAST` |
+
+```kotlin
+val posts = db.post.findMany {
+    where { draft eq false }
+    orderBy {
+        createdAt.desc()
+        title.asc()
+    }
+}
+```
+
+The `NullsFirst` / `NullsLast` variants are useful for nullable fields where you want explicit control over where `NULL` values appear in the sorted output:
+
+```kotlin
+db.post.findMany {
+    orderBy {
+        score.descNullsLast()   // ranked posts first, unscored posts at the bottom
+        createdAt.ascNullsFirst()
+    }
+}
+```
+
+<CodeGroup>
+```kotlin Kotlin
+db.user.findMany {
+    orderBy {
+        createdAt.desc()
+        name.asc()
+    }
+}
+```
+
+```java Java
+db.user().findMany(q -> q
+    .orderBy(User_.CREATED_AT.desc(), User_.NAME.asc())
+);
+```
+</CodeGroup>
+
+## Offset pagination
+
+Offset pagination is the simplest approach: `take` sets the page size and `skip` advances through the result set.
+
+```kotlin
+// Page 1
+val page1 = db.post.findMany {
+    orderBy { createdAt.desc() }
+    take = 10
+    skip = 0
+}
+
+// Page 2
+val page2 = db.post.findMany {
+    orderBy { createdAt.desc() }
+    take = 10
+    skip = 10
+}
+```
+
+<Tip>
+  Always pair `take` / `skip` with an `orderBy` clause. Without a stable sort order, the database is free to return rows in any order and your pages may overlap or skip records.
+</Tip>
+
+<Note>
+  Offset pagination can become expensive on large tables because the database must scan and discard the first `skip` rows before returning results. For deep pages on high-traffic tables, consider cursor pagination instead.
+</Note>
+
+## Cursor pagination
+
+Cursor pagination uses the primary key of the last record you received to fetch the next page. It is stable and performant regardless of how far into the dataset you are.
+
+```kotlin
+// First page — no cursor needed
+val firstPage = db.post.findMany {
+    orderBy { id.asc() }
+    take = 10
+}
+
+// Subsequent pages — pass the id of the last record from the previous page
+val nextPage = db.post.findMany {
+    cursor(id to lastSeenId)
+    take = 10
+}
+```
+
+<Note>
+  Cursor pagination always uses the primary key field. Make sure your `orderBy` includes the same field used in `cursor()` so the result set is deterministic.
+</Note>
+
+## Distinct
+
+The `distinct { }` block adds a `SELECT DISTINCT` on the specified fields, collapsing duplicate values in the result.
+
+```kotlin
+// Each unique email address appears only once
+val results = db.user.findMany {
+    distinct { email }
+}
+```
+
+You can specify multiple fields to deduplicate on a composite key:
+
+```kotlin
+val results = db.post.findMany {
+    distinct { authorId; categoryId }
+}
+```
+
+## Projections with `projectMany` and `projectFirst`
+
+Sometimes you only need a subset of a model's fields — for example, populating a dropdown list with just `id` and `name`. Fetching entire rows in that case wastes bandwidth and memory. Volan's `projectMany` and `projectFirst` methods let you declare exactly which fields to retrieve.
+
+```kotlin
+val projections = db.post.projectMany {
+    select { title; authorId }
+    where { draft eq false }
+    orderBy { createdAt.desc() }
+    take = 50
+}
+```
+
+The result is a list of lightweight projection objects rather than full `Post` instances:
+
+```kotlin
+projections[0].title    // ✅ "Hello, World"
+projections[0].authorId // ✅ 7
+projections[0].body     // ❌ throws VolanFieldNotSelectedException
+```
+
+<Warning>
+  Accessing a field that was not listed in `select { }` throws `VolanFieldNotSelectedException` at runtime. Include every field you intend to read, or use `findMany` to load the full model.
+</Warning>
+
+`projectFirst` follows the same pattern as `findFirst` — it returns a single projection object or `null` if no row matches:
+
+```kotlin
+val projection = db.user.projectFirst {
+    select { id; name; avatarUrl }
+    where { id eq userId }
+}
+```
+
+<CodeGroup>
+```kotlin Kotlin
+val projections = db.post.projectMany {
+    select { title; authorId }
+    where { draft eq false }
+}
+```
+
+```java Java
+List<PostProjection> projections = db.post().projectMany(q -> q
+    .select(s -> s.title().authorId())
+    .where(w -> w.draft().eq(false))
+);
+```
+</CodeGroup>
+
+## Combining everything
+
+All of these clauses compose freely inside the same query builder:
+
+```kotlin
+val results = db.post.projectMany {
+    select { id; title; views }
+    where { draft eq false }
+    distinct { authorId }
+    orderBy {
+        views.descNullsLast()
+        createdAt.desc()
+    }
+    take = 25
+    skip = 0
+}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Relations" icon="diagram-project" href="/querying/relations">
+    Eagerly load related models alongside your main results in one round-trip.
+  </Card>
+  <Card title="Aggregation" icon="sigma" href="/querying/aggregation">
+    Compute sums, averages, and grouped statistics over your data.
+  </Card>
+</CardGroup>

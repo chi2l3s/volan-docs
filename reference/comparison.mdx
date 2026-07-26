@@ -1,0 +1,258 @@
+---
+title: "Volan vs Hibernate, JOOQ, and Exposed: Comparison"
+sidebarTitle: "Comparison"
+description: "See how Volan's schema-first, zero-reflection approach compares to Hibernate/JPA, JOOQ, and Kotlin Exposed across key design dimensions."
+---
+
+Choosing a persistence library is one of the most consequential decisions in a JVM project. Each tool in this space reflects a different philosophy about where truth should live, how much magic is acceptable at runtime, and what trade-offs are worth making for developer experience. This page maps Volan against the three most common alternatives along the dimensions that matter most in practice.
+
+---
+
+## At a glance
+
+| | Volan | Hibernate / JPA | Exposed | JOOQ |
+|---|---|---|---|---|
+| **Source of truth** | Schema file | Annotated classes | Kotlin table objects | Database |
+| **Type-safe queries** | Generated DSL | JPQL strings / Criteria | DSL | Generated DSL |
+| **Runtime reflection** | None on mapping path | Extensive | Some | None |
+| **Declarative migrations** | Built-in (M6+) | External (Flyway/Liquibase) | External | External |
+| **Nested writes** | Built-in | Cascades | Manual | Manual |
+| **Java-first API** | Yes, tested in Java | Yes | Awkward | Yes |
+| **Lazy loading surprises** | None by design | Common | Explicit | N/A |
+| **N+1 by default** | Impossible | Common | Explicit | N/A |
+
+---
+
+## Schema-first vs class-first vs DB-first
+
+The single biggest design axis is where the schema is defined.
+
+<Tabs>
+
+<Tab title="Volan — schema file">
+
+You write one `.volan` file. Volan generates the database migration *and* the type-safe client code from it. There is exactly one place to change when your data model evolves, and it is checked into source control like any other code.
+
+```volan
+model Post {
+  id        Int      @id @default(autoincrement())
+  title     String
+  published Boolean  @default(false)
+  author    User     @relation(fields: [authorId], references: [id])
+  authorId  Int
+}
+```
+
+Running `volan generate` after editing the schema regenerates your client and optionally produces a migration file.
+
+</Tab>
+
+<Tab title="Hibernate/JPA — annotated class">
+
+The data model lives in Java/Kotlin classes. Annotations carry the mapping metadata. Schema generation is possible but usually replaced by external migration tools (Flyway, Liquibase) as soon as a project reaches production.
+
+```java
+@Entity
+@Table(name = "posts")
+public class Post {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false)
+    private String title;
+
+    private boolean published = false;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "author_id")
+    private User author;
+}
+```
+
+The class *is* the schema — but keeping the class, the migration, and the database in sync is your responsibility.
+
+</Tab>
+
+<Tab title="JOOQ — database first">
+
+JOOQ introspects an existing database and generates type-safe query DSL classes from it. The database is the source of truth; generated code must be re-run whenever the schema changes.
+
+This works well in teams where a DBA owns the database schema, but it inverts the workflow for greenfield projects.
+
+</Tab>
+
+<Tab title="Exposed — Kotlin table objects">
+
+Exposed uses Kotlin objects to describe tables, and provides both a DSL and a DAO layer. There is no schema file; the table definitions live alongside application code. Migrations must be managed manually or with a third-party tool.
+
+</Tab>
+
+</Tabs>
+
+---
+
+## No lazy loading — ever
+
+This is perhaps the starkest runtime difference between Volan and Hibernate.
+
+In Hibernate, a `@ManyToOne` or `@OneToMany` association with `FetchType.LAZY` is not loaded until you access the field. If the Hibernate session is still open, it issues another SELECT. If the session is closed, you get a `LazyInitializationException`. In a Spring application this often leads to the "open session in view" anti-pattern, which keeps sessions alive across the entire HTTP request to paper over unintended lazy loads.
+
+**Volan takes a different position:** relations are never loaded unless you explicitly request them.
+
+```kotlin
+// Relations must be opted in at the call site
+val post = db.post.findUnique {
+    where { id eq postId }
+    include {
+        author()          // load the author relation
+        comments {        // load comments, and within each comment…
+            include { author() }
+        }
+    }
+}
+
+// If you access post.author without including it,
+// VolanRelationNotLoadedException is thrown immediately —
+// no silent query, no session dependency.
+```
+
+This means:
+- Every SELECT you pay for is visible in your code.
+- You can load related data in any layer of your application, not just while a transaction is open.
+- The `VolanRelationNotLoadedException` tells you exactly which relation to add to your query — it is a compile-time mistake surfaced at the right moment, not a mysterious runtime failure.
+
+---
+
+## N+1 is structurally impossible
+
+The N+1 problem occurs when code iterates over a list of records and accesses a relation on each one, triggering a separate query per row. Hibernate, Exposed, and raw JDBC are all susceptible if the developer does not batch-fetch eagerly.
+
+Volan eliminates N+1 by construction: you cannot iterate over results and trigger new queries because there is no implicit query mechanism. All data to be loaded must be declared in the `include {}` block before execution. Volan then issues the minimum number of round trips necessary to satisfy that include tree — typically one per level of nesting — regardless of how many rows are involved.
+
+```kotlin
+// One query, not 1 + N queries
+val users = db.user.findMany {
+    include { posts() }
+}
+users.forEach { user ->
+    // user.posts is already in memory — no further queries
+    println("${user.name} has ${user.posts.size} posts")
+}
+```
+
+---
+
+## Nested writes
+
+Creating a parent record and its related children in a single atomic operation requires careful coordination in most ORMs.
+
+<Tabs>
+
+<Tab title="Volan">
+
+Volan's `create` and `update` calls accept a nested write tree that mirrors the schema relation graph. Everything inside one call executes in a single transaction automatically.
+
+```kotlin
+val newUser = db.user.create {
+    data {
+        name  = "Alice"
+        email = "alice@example.com"
+        posts = createMany {
+            data(
+                PostCreateInput { title = "Hello, world!" },
+                PostCreateInput { title = "Second post" }
+            )
+        }
+    }
+}
+```
+
+</Tab>
+
+<Tab title="Hibernate/JPA">
+
+Hibernate supports cascading operations through `CascadeType`. The child entities are saved automatically when the parent is persisted, but only if the cascade is configured correctly and the association is properly managed (i.e. both sides of a bidirectional association are set). Subtle bugs arise when you forget to set the inverse side or when cascade settings are too broad.
+
+```java
+user.setPosts(List.of(post1, post2));
+post1.setAuthor(user);
+post2.setAuthor(user);
+entityManager.persist(user); // cascades to posts
+```
+
+</Tab>
+
+<Tab title="Exposed / JOOQ">
+
+Both tools require you to perform inserts in the correct order manually, obtaining generated IDs as you go. This is explicit and predictable but verbose.
+
+```kotlin
+// Exposed
+val userId = Users.insertAndGetId { it[name] = "Alice" }
+Posts.insert { it[title] = "Hello"; it[authorId] = userId }
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Migrations
+
+| Tool | Migration story |
+|------|-----------------|
+| **Volan** | `volan migrate dev` generates a SQL migration from the diff between your schema and the database. `volan migrate deploy` applies pending migrations in CI/production. Built-in from M6. |
+| **Hibernate** | `hbm2ddl.auto=update` is not safe for production. Most teams adopt Flyway or Liquibase and write migrations by hand. |
+| **Exposed** | `SchemaUtils.createMissingTablesAndColumns()` can add missing columns but cannot drop or rename them. Production migrations require a separate tool. |
+| **JOOQ** | Schema changes happen in the database first; then you regenerate the JOOQ classes. Migration tooling is external. |
+
+---
+
+## Java API quality
+
+Volan's query DSL is designed and tested in Java as a first-class citizen, not retrofitted. Every builder and lambda in the API compiles cleanly without unchecked casts or raw types, and the generated model classes are plain Java-compatible POJOs.
+
+Exposed, by contrast, is built primarily for Kotlin. Using it from Java is technically possible but produces awkward code due to heavy use of Kotlin extension functions, object singletons, and receivers.
+
+JOOQ and Hibernate both have strong Java APIs and are equally comfortable from either JVM language.
+
+---
+
+## Runtime reflection
+
+Hibernate uses reflection and runtime bytecode enhancement (via cglib or ByteBuddy) to implement lazy proxies, dirty checking, and instrumented entity classes. This makes startup slower, makes stack traces harder to read, and can cause friction with GraalVM native image compilation.
+
+Volan performs no reflection on the mapping path at all. Generated model classes are plain data classes; the query engine maps `ResultSet` columns to fields using generated code, not reflective field-setters. This gives you:
+
+- Faster startup
+- Smaller native images with no special configuration
+- Stack traces that point to your code, not to proxy internals
+
+---
+
+## When to choose Volan
+
+<CardGroup cols={2}>
+
+<Card title="Greenfield JVM projects" icon="seedling">
+Volan's schema-first workflow is most productive when you are designing the data model from scratch and want the database schema, migrations, and query client to stay perfectly in sync without manual coordination.
+</Card>
+
+<Card title="Teams burned by Hibernate magic" icon="fire-flame-curved">
+If your team has encountered `LazyInitializationException`, mysterious N+1 regressions, or cascade misconfiguration bugs, Volan's explicit-everything model offers a predictable alternative.
+</Card>
+
+<Card title="Kotlin or Java on JVM 17+" icon="mug-hot">
+Volan's generated DSL works naturally in both Kotlin (with coroutines support) and Java. The API was designed for both from day one.
+</Card>
+
+<Card title="Projects targeting GraalVM native" icon="bolt">
+Zero reflection on the mapping path means Volan works with GraalVM native image without reflection configuration files or build-time agents.
+</Card>
+
+</CardGroup>
+
+<Note>
+Volan is not yet the right choice for projects that need to introspect or modify schema-unaware legacy tables at runtime, or that rely on JPA's portability across multiple database vendors via a single JPQL dialect. See the [ROADMAP](https://github.com/thirtyeighttwentysix/volan/blob/main/ROADMAP.md) for planned features.
+</Note>

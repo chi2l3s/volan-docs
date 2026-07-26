@@ -1,0 +1,174 @@
+---
+title: "Configuring Your Database Connection in Volan"
+sidebarTitle: "Datasource"
+description: "Define your database provider and connection URL in schema.volan, then configure the runtime client with pool settings, credentials, or a custom DataSource."
+---
+
+Volan separates database configuration into two layers: a `datasource` block in your `schema.volan` file that drives code generation, and a runtime builder on the generated client that manages the live connection pool. Understanding both layers gives you full control over how Volan connects to your database in every environment.
+
+## The `datasource` block
+
+The `datasource` block lives in your `schema.volan` file and tells the code generator which database type you are targeting. Every schema must contain exactly one `datasource` block.
+
+```prisma
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+```
+
+<ParamField path="provider" type="string" required>
+  The database dialect to target. Must match the dialect jar present on your classpath at runtime. Accepted values: `"postgresql"`, `"mysql"`, `"sqlite"`, `"h2"`.
+</ParamField>
+
+<ParamField path="url" type="string" required>
+  The JDBC connection URL. Use `env("VAR_NAME")` to read the value from an environment variable at runtime. Volan emits a warning if you inline a bare connection string — environment variable indirection is strongly recommended in production.
+</ParamField>
+
+<Warning>
+  Inlining a connection string directly (for example `url = "jdbc:postgresql://localhost/myapp"`) causes Volan to print a warning at generation time. Use `env()` for any environment beyond your local machine.
+</Warning>
+
+### Supported providers
+
+| Value | Dialect artifact | Status |
+|---|---|---|
+| `"postgresql"` | `volan-dialect-postgres` | Available |
+| `"mysql"` | `volan-dialect-mysql` | Coming soon |
+| `"sqlite"` | `volan-dialect-sqlite` | Coming soon |
+| `"h2"` | `volan-dialect-h2` | Coming soon |
+
+---
+
+## Runtime connection builder
+
+The generated client exposes a `builder()` companion method that returns a `Volan.Builder` instance. Call it to configure the live connection before your application starts serving traffic.
+
+### URL, credentials, and pool settings
+
+```kotlin
+val db = BlogClient.builder()
+    .url("jdbc:postgresql://localhost:5432/myapp")
+    .username("postgres")
+    .password(System.getenv("DB_PASSWORD"))
+    .maxPoolSize(10)
+    .connectionTimeout(30_000)
+    .poolName("my-pool")
+    .build()
+```
+
+<ParamField path="url" type="String" required>
+  The JDBC connection URL passed directly to HikariCP. Required unless you supply a custom `dataSource`.
+</ParamField>
+
+<ParamField path="username" type="String">
+  Database username. Passed to HikariCP; not required if credentials are embedded in the URL or managed by your `DataSource`.
+</ParamField>
+
+<ParamField path="password" type="String">
+  Database password. Read from the environment at runtime — never hard-code this value in source.
+</ParamField>
+
+<ParamField path="maxPoolSize" type="Int" default="10">
+  Maximum number of connections HikariCP maintains in the pool. The default of `10` is appropriate for many workloads; tune upward for high-concurrency services.
+</ParamField>
+
+<ParamField path="connectionTimeout" type="Long" default="30000">
+  Maximum number of milliseconds the client waits to acquire a connection from the pool before throwing. Defaults to `30_000` (30 seconds).
+</ParamField>
+
+<ParamField path="poolName" type="String">
+  Optional label assigned to the HikariCP pool. Surfaces in JMX and monitoring dashboards, which is useful when a single JVM hosts more than one pool.
+</ParamField>
+
+<Note>
+  Volan uses **HikariCP** as its connection pool. The defaults (`maxPoolSize = 10`, `connectionTimeout = 30 000 ms`) mirror HikariCP's own recommended starting values. See the [HikariCP documentation](https://github.com/brettwooldridge/HikariCP#configuration-knobs-baby) for advanced tuning.
+</Note>
+
+### Bring your own DataSource
+
+When you run inside a container or application server that manages its own connection pool (for example, a Jakarta EE container or a Spring `DataSource` bean), you can hand Volan an existing `javax.sql.DataSource` and skip the URL/username/password entirely.
+
+```kotlin
+val db = BlogClient.builder()
+    .dataSource(myDataSource)
+    .build()
+```
+
+<ParamField path="dataSource" type="javax.sql.DataSource">
+  An externally managed `DataSource`. When set, `url`, `username`, `password`, `maxPoolSize`, and `connectionTimeout` are ignored. Calling `close()` on the client does **not** shut down the external `DataSource`.
+</ParamField>
+
+<Tip>
+  Prefer `.dataSource()` in containerised deployments and in test suites that use an embedded pool (such as H2 or Testcontainers) so that Volan does not create a second pool on top of one that already exists.
+</Tip>
+
+### Overriding the dialect
+
+Volan discovers the correct dialect automatically from the JDBC URL prefix using Java's `ServiceLoader` mechanism. You only need to call `.dialect()` in the rare case where auto-discovery fails or you want to be explicit in tests.
+
+```kotlin
+val db = BlogClient.builder()
+    .url("jdbc:postgresql://localhost:5432/myapp")
+    .dialect(PostgresDialect)
+    .build()
+```
+
+<ParamField path="dialect" type="VolanDialect">
+  Forces a specific dialect instead of relying on auto-discovery. Must still have the corresponding dialect artifact on the runtime classpath.
+</ParamField>
+
+---
+
+## Closing the client
+
+Call `close()` when your application shuts down to release pool resources cleanly.
+
+```kotlin
+db.close()
+```
+
+- If Volan created the internal HikariCP pool (i.e., you used `.url()`), `close()` shuts the pool down completely.
+- If you provided your own `DataSource` via `.dataSource()`, `close()` is a no-op — lifecycle management remains the caller's responsibility.
+
+<Warning>
+  Failing to call `close()` when Volan owns the pool will leave background threads running and may prevent a clean JVM shutdown.
+</Warning>
+
+---
+
+## Full example
+
+<CodeGroup>
+
+```kotlin Kotlin (env variable)
+val db = BlogClient.builder()
+    .url(System.getenv("DATABASE_URL"))
+    .username(System.getenv("DB_USER"))
+    .password(System.getenv("DB_PASSWORD"))
+    .maxPoolSize(20)
+    .connectionTimeout(5_000)
+    .poolName("blog-pool")
+    .build()
+
+// ... use db ...
+
+db.close()
+```
+
+```kotlin Kotlin (BYO DataSource)
+val hikari = HikariDataSource(HikariConfig().apply {
+    jdbcUrl  = System.getenv("DATABASE_URL")
+    username = System.getenv("DB_USER")
+    password = System.getenv("DB_PASSWORD")
+    maximumPoolSize = 20
+})
+
+val db = BlogClient.builder()
+    .dataSource(hikari)
+    .build()
+
+// Volan will not close hikari — manage its lifecycle yourself
+```
+
+</CodeGroup>

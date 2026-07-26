@@ -1,0 +1,173 @@
+---
+title: "Transactions and Isolation Levels in Volan"
+sidebarTitle: "Transactions"
+description: "Learn how to group multiple Volan operations into atomic transactions, configure isolation levels, set retry policies, and work with nested transactions."
+---
+
+Transactions let you group multiple database operations into a single atomic unit — either all of them succeed together, or none of them do. Volan's `db.transaction {}` block makes this straightforward to express in Kotlin or Java, with built-in support for isolation levels, automatic retries, and nested transactions via savepoints.
+
+## Basic transaction
+
+Wrap any sequence of Volan operations in `db.transaction {}` to execute them atomically. The block returns the value of its last expression.
+
+```kotlin
+val post = db.transaction {
+    val user = db.user.create {
+        data { email = "new@example.com" }
+    }
+
+    db.post.create {
+        data {
+            title  = "First Post"
+            author { connect { id eq user.id } }
+        }
+    }
+}
+// `post` is the Post entity created inside the transaction
+```
+
+If any operation inside the block throws an exception, Volan rolls back the entire transaction and re-throws the exception. You never need to call `rollback()` manually.
+
+---
+
+## Isolation levels
+
+You can pass an `Isolation` value as the first argument to `db.transaction` to control how the transaction interacts with concurrent writes from other connections.
+
+```kotlin
+val result = db.transaction(Isolation.SERIALIZABLE) {
+    // all reads and writes in here are fully serializable
+}
+```
+
+### Available levels
+
+<ParamField path="Isolation" type="enum">
+  Controls the visibility of uncommitted changes from other transactions.
+
+  - **`READ_UNCOMMITTED`** — Can read rows modified by other uncommitted transactions (dirty reads allowed). Highest throughput, lowest consistency.
+  - **`READ_COMMITTED`** — Only sees rows committed before each statement began. The default for most databases.
+  - **`REPEATABLE_READ`** — Re-reading the same row within a transaction always returns the same data, even if another transaction commits a change in between.
+  - **`SERIALIZABLE`** — Full isolation; transactions behave as if they ran sequentially. Safest but most prone to contention.
+  - **`DEFAULT`** — Uses whatever isolation level the database connection is configured with. Recommended unless you have a specific need.
+</ParamField>
+
+<Tip>
+  Prefer `Isolation.DEFAULT` for general application code and reach for `SERIALIZABLE` only when you need to prevent phantom reads or write-skew anomalies, such as in financial or inventory workflows.
+</Tip>
+
+### Serialization failures
+
+When using `Isolation.SERIALIZABLE` (or `REPEATABLE_READ` on some databases), the database may abort a transaction due to a conflict with a concurrent transaction. In this case Volan throws `VolanTransactionException` with `retryable = true`. Pair this isolation level with a `RetryPolicy` so Volan handles retries automatically.
+
+```kotlin
+val result = db.transaction(Isolation.SERIALIZABLE, RetryPolicy.DEFAULT) {
+    // automatically retried up to 3 times on serialization failure
+}
+```
+
+---
+
+## Retry policies
+
+`RetryPolicy` controls how many times Volan re-attempts a transaction after a retryable failure, and how long it waits between attempts.
+
+<ParamField path="RetryPolicy" type="object">
+  Configures automatic retry behaviour for transactions.
+
+  - **`RetryPolicy.NONE`** — No retries. The transaction is attempted once; on failure the exception propagates immediately.
+  - **`RetryPolicy.DEFAULT`** — 3 total attempts, 20 ms initial delay, 2× exponential backoff (i.e. delays of 20 ms, 40 ms).
+  - **Custom** — Construct a `RetryPolicy` directly with your own parameters.
+</ParamField>
+
+```kotlin
+// No retries
+db.transaction(Isolation.READ_COMMITTED, RetryPolicy.NONE) { /* ... */ }
+
+// Built-in default: 3 attempts, 20 ms delay, 2× backoff
+db.transaction(Isolation.SERIALIZABLE, RetryPolicy.DEFAULT) { /* ... */ }
+
+// Custom: 5 attempts, 50 ms initial delay, 1.5× backoff
+val myPolicy = RetryPolicy(attempts = 5, initialDelay = 50, multiplier = 1.5)
+db.transaction(Isolation.SERIALIZABLE, myPolicy) { /* ... */ }
+```
+
+<Note>
+  Volan only retries on exceptions where `retryable == true` (such as serialization failures). Application exceptions — like a `VolanNotFoundException` thrown inside the block — are never retried.
+</Note>
+
+---
+
+## Nested transactions
+
+You can call `db.transaction {}` inside an already-open transaction. Volan detects the outer transaction and uses a **savepoint** rather than opening a new database connection. This means the inner block can be rolled back independently without affecting the outer transaction.
+
+```kotlin
+db.transaction {
+    doSomething()
+
+    db.transaction {
+        // This uses a savepoint, not a new connection.
+        // Rolling back here only undoes operations since the savepoint.
+        doSomethingElse()
+    }
+
+    doMoreWork()
+}
+```
+
+<Tip>
+  Savepoints are a powerful tool for partial rollbacks. If `doSomethingElse()` fails and the inner transaction catches the exception, the outer transaction can continue — only the inner block's changes are undone.
+</Tip>
+
+---
+
+## Practical example: transferring credits
+
+The following example shows a multi-step workflow that must succeed or fail atomically. Using `Isolation.SERIALIZABLE` prevents a concurrent transfer from double-spending the same credits.
+
+```kotlin
+val transfer = db.transaction(Isolation.SERIALIZABLE, RetryPolicy.DEFAULT) {
+    // Deduct from sender
+    val sender = db.account.update {
+        where { id eq senderId }
+        data  { credits = sender.credits - amount }
+    }
+
+    // Add to recipient
+    val recipient = db.account.update {
+        where { id eq recipientId }
+        data  { credits = recipient.credits + amount }
+    }
+
+    // Record the transfer
+    db.transfer.create {
+        data {
+            amount      = amount
+            fromAccount { connect { id eq senderId    } }
+            toAccount   { connect { id eq recipientId } }
+        }
+    }
+}
+```
+
+If any of the three operations throws — for example if `senderId` is not found — the whole transaction rolls back and neither account is modified. If a serialization conflict occurs, `RetryPolicy.DEFAULT` retries up to three times before propagating the exception.
+
+---
+
+## Quick reference
+
+<CardGroup cols={2}>
+  <Card title="db.transaction {}" icon="circle-check">
+    Wraps operations in an atomic transaction. Rolls back automatically on any exception. Returns the last expression's value.
+  </Card>
+  <Card title="Isolation levels" icon="shield">
+    Pass an `Isolation` enum value to control read/write visibility. Use `Isolation.DEFAULT` unless you have specific consistency requirements.
+  </Card>
+  <Card title="RetryPolicy" icon="rotate">
+    `RetryPolicy.NONE`, `RetryPolicy.DEFAULT`, or a custom instance. Volan retries only on `VolanTransactionException` where `retryable == true`.
+  </Card>
+  <Card title="Nested transactions" icon="layer-group">
+    Inner `db.transaction {}` calls inside an outer transaction automatically use savepoints — no new connection is opened.
+  </Card>
+</CardGroup>

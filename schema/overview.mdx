@@ -1,0 +1,143 @@
+---
+title: "schema.volan Language Overview"
+sidebarTitle: "Overview"
+description: "Learn how a schema.volan file is structured, its four block types, how to run the formatter, and how Volan surfaces error diagnostics."
+---
+
+Every Volan project is driven by a single source of truth: a `schema.volan` file that describes your data sources, code generator settings, data models, and enumerations. The Volan toolchain reads this file to validate your schema, generate type-safe client code, and produce migration SQL — so keeping it accurate is the most important step in any project.
+
+## File structure
+
+A `schema.volan` file is made up of four block types. Each block has a keyword, a name, and a body enclosed in curly braces. Blocks can appear in any order, but by convention the `datasource` block comes first, followed by `generator`, then models and enums.
+
+```prisma
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "volan-kotlin"
+  package  = "com.example.myapp"
+}
+
+model User {
+  id    Int    @id @default(autoincrement())
+  email String @unique
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+```
+
+### The four block types
+
+<CardGroup cols={2}>
+  <Card title="datasource" icon="database">
+    Declares which database provider to use and how to connect to it. Only one `datasource` block is allowed per schema file.
+  </Card>
+  <Card title="generator" icon="gear">
+    Controls code generation: which generator to run, the target package, and output directory. You can define multiple generator blocks.
+  </Card>
+  <Card title="model" icon="table">
+    Represents a database table. Each model contains field declarations and optional block-level attributes for indexes, constraints, and table mapping.
+  </Card>
+  <Card title="enum" icon="list">
+    Defines an enumeration that can be used as a field type in any model. Enums can map their values to custom database strings.
+  </Card>
+</CardGroup>
+
+## datasource block
+
+The `datasource` block tells Volan which database provider to target and how to reach it. The `url` is most commonly loaded from an environment variable so that credentials are kept out of source control.
+
+```prisma
+datasource db {
+  provider = "postgresql"   // postgresql | mysql | sqlite
+  url      = env("DATABASE_URL")
+}
+```
+
+Supported providers are `"postgresql"`, `"mysql"`, and `"sqlite"`.
+
+## generator block
+
+The `generator` block controls what code Volan produces and where it puts it.
+
+```prisma
+generator client {
+  provider     = "volan-kotlin"
+  package      = "com.example.myapp"
+  output       = "build/generated/volan"
+  javaFriendly = true
+}
+```
+
+| Option | Description |
+|---|---|
+| `provider` | The generator to run. Use `"volan-kotlin"` for Kotlin/JVM projects. |
+| `package` | The root package name for all generated classes. |
+| `output` | Directory where generated sources are written. |
+| `javaFriendly` | When `true`, emits additional Java-compatible accessors. |
+
+## Running the formatter
+
+Volan ships with a built-in formatter that normalises whitespace, aligns `=` signs within blocks, and orders fields consistently. Run it from the project root:
+
+```bash
+volan format
+```
+
+The formatter rewrites `schema.volan` in place. Regular `// comments` are dropped during formatting; `/// doc comments` are preserved and forwarded into generated code.
+
+## Comments and doc comments
+
+```prisma
+// This comment is dropped by the formatter.
+
+/// This doc comment is preserved and appears in the generated Kotlin class.
+model Post {
+  id Int @id @default(autoincrement())
+}
+```
+
+Use `///` doc comments on models and fields to add KDoc to generated classes and properties.
+
+## Error diagnostics
+
+When your schema contains an error, Volan prints a structured diagnostic that points to the exact location in the file:
+
+```
+error[E0104]: expected a field type
+ ┌─ schema.volan:5:9
+ │
+5│   email @unique
+ │         ^ a field is written as `name Type`
+ │
+ = help: add a type, for example `email String`
+```
+
+Diagnostics include an error code, a file/line/column pointer, a short explanation, and a `help` hint where possible. Validation errors are always caught before any code generation or migration begins.
+
+<Note>
+  Volan validates the entire schema before it generates any code. If any model, relation, or attribute is invalid, the whole run is aborted and no files are written.
+</Note>
+
+## What to read next
+
+<CardGroup cols={2}>
+  <Card title="Models" icon="table" href="/schema/models">
+    Learn how to define models, configure table names, and add indexes and constraints.
+  </Card>
+  <Card title="Fields" icon="brackets-curly" href="/schema/fields">
+    Explore all scalar types and field-level attributes including defaults and column mapping.
+  </Card>
+  <Card title="Relations" icon="arrow-right-arrow-left" href="/schema/relations">
+    Define one-to-one, one-to-many, and many-to-many relationships between models.
+  </Card>
+  <Card title="Enums" icon="list" href="/schema/enums">
+    Declare enumerations and control how their values are stored in the database.
+  </Card>
+</CardGroup>

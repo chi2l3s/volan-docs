@@ -1,0 +1,180 @@
+---
+title: "Installing Volan: Modules, BOM, and Gradle Setup"
+sidebarTitle: "Installation"
+description: "Full module reference for Volan: BOM usage, JDK requirements, Gradle configuration, and how to wire the code generator into your build."
+---
+
+Volan is split into focused modules so you can include only what your project needs. A bill-of-materials artifact (`volan-bom`) pins all modules to a single consistent version, so you never have to manage version numbers individually. This page covers every available module, how to set up the BOM in Gradle, and how to wire the code generator into your build.
+
+<Warning>
+  Volan `0.1.0-SNAPSHOT` is pre-1.0 and **not yet published to Maven Central**. You must build from source and install to your local Maven repository before adding it to any project. See [Building from source](#building-from-source) below.
+</Warning>
+
+## Requirements
+
+- **JDK 17 or newer.** Volan uses sealed interfaces and records from recent Java versions. JDK 17 is the minimum; JDK 21 is recommended for production use.
+- **Gradle 8+** with the Kotlin DSL is assumed throughout this page, though Maven builds are equally valid.
+
+## Available modules
+
+<CardGroup cols={2}>
+  <Card title="volan-runtime" icon="server">
+    Query execution, JDBC connection pooling, transaction management, and the base types shared across generated clients. Add this as an `implementation` dependency in every project that uses a generated client.
+  </Card>
+  <Card title="volan-codegen" icon="code">
+    The code generator that reads a `schema.volan` file and writes Kotlin (and Java-friendly) sources. This is a **build-time only** dependency — do not include it on your runtime classpath.
+  </Card>
+  <Card title="volan-dialect-postgres" icon="database">
+    PostgreSQL dialect. Implements the SQL generation, type mapping, and constraint error translation for PostgreSQL. Auto-discovered at runtime via `ServiceLoader` — add it as a `runtimeOnly` dependency.
+  </Card>
+  <Card title="volan-bom" icon="list-check">
+    Bill of materials. Import this as a `platform` dependency to align every `volan-*` module to the same version without specifying versions individually.
+  </Card>
+</CardGroup>
+
+The following modules are defined in the BOM and reserved for upcoming milestones. They are not yet functional but are available as stubs:
+
+| Module | Purpose | Status |
+|---|---|---|
+| `volan-dialect-mysql` | MySQL and MariaDB dialect | Coming soon |
+| `volan-dialect-sqlite` | SQLite dialect | Coming soon |
+| `volan-dialect-h2` | H2 in-memory dialect (useful for testing) | Coming soon |
+| `volan-coroutines` | Kotlin coroutine wrappers for all client operations | Coming soon |
+| `volan-migrate` | Declarative schema migration engine | Coming soon |
+
+## Building from source
+
+Because Volan is not yet on Maven Central, install it to your local Maven repository first:
+
+```bash
+git clone https://github.com/thirtyeighttwentysix/volan.git
+cd volan
+./gradlew publishToMavenLocal
+```
+
+This publishes all modules under group `io.github.thirtyeighttwentysix` at version `0.1.0-SNAPSHOT` to `~/.m2/repository`. You only need to re-run this when you pull new changes from the repository.
+
+## Importing the BOM
+
+Add `mavenLocal()` to your repositories block, import the BOM as a `platform` dependency, then list the modules you need without specifying a version.
+
+```kotlin build.gradle.kts
+repositories {
+    mavenLocal() // required until Maven Central publication
+    mavenCentral()
+}
+
+dependencies {
+    // Pin all volan-* modules to the same version
+    implementation(platform("io.github.thirtyeighttwentysix:volan-bom:0.1.0-SNAPSHOT"))
+
+    // Runtime — required in every application that uses a generated client
+    implementation("io.github.thirtyeighttwentysix:volan-runtime")
+
+    // PostgreSQL dialect — auto-discovered at runtime, no code change needed to swap dialects
+    runtimeOnly("io.github.thirtyeighttwentysix:volan-dialect-postgres")
+
+    // Code generator — build-time only, excluded from the runtime classpath
+    implementation("io.github.thirtyeighttwentysix:volan-codegen")
+}
+```
+
+<Tip>
+  The BOM covers all modules including future ones (`volan-dialect-mysql`, `volan-coroutines`, etc.). When those modules are released, you can add them without touching the BOM version line.
+</Tip>
+
+## Wiring the code generator
+
+The code generator reads your `schema.volan` file and produces Kotlin sources in your build directory. Register a Gradle task that runs it, wire the compile tasks to depend on it, and register the output directory as a source root.
+
+```kotlin build.gradle.kts
+import io.github.thirtyeighttwentysix.volan.codegen.VolanGenerator
+import io.github.thirtyeighttwentysix.volan.ir.SchemaLoader
+import io.github.thirtyeighttwentysix.volan.schema.SourceFile
+
+val generateVolanClient by tasks.registering {
+    group       = "volan"
+    description = "Generates the Volan client from schema.volan."
+
+    val schemaFile = layout.projectDirectory.file("schema.volan")
+    val outputDir  = layout.buildDirectory.dir("generated/volan")
+
+    inputs.file(schemaFile)
+    outputs.dir(outputDir)
+
+    doLast {
+        val source = schemaFile.asFile.readText()
+        val result = SchemaLoader.load(SourceFile("schema.volan", source))
+        if (result.hasErrors) error(result.render())
+
+        // Delete stale generated files before writing
+        // (ensures models removed from the schema do not linger as orphan files)
+        outputDir.get().asFile.deleteRecursively()
+        VolanGenerator.writeTo(result.schemaOrThrow(), outputDir.get().asFile.toPath())
+    }
+}
+
+// Compile tasks must wait for generation to finish
+tasks.compileKotlin { dependsOn(generateVolanClient) }
+tasks.compileJava   { dependsOn(generateVolanClient) }
+
+// Register the output directory as a Kotlin source root
+kotlin.sourceSets["main"].kotlin.srcDir(
+    layout.buildDirectory.dir("generated/volan")
+)
+```
+
+<Note>
+  The `outputDir.get().asFile.deleteRecursively()` call before writing is intentional. It ensures that models you delete from `schema.volan` disappear from the generated sources rather than lingering as files that still compile. Volan will always regenerate every file from scratch.
+</Note>
+
+### Verifying the setup
+
+Run the generator directly to confirm your schema is valid and the output is written:
+
+```bash
+./gradlew generateVolanClient
+```
+
+A successful run prints a line for each file it writes:
+
+```
+generated build/generated/volan/com/example/blog/BlogClient.kt
+generated build/generated/volan/com/example/blog/Post.kt
+generated build/generated/volan/com/example/blog/PostFields.kt
+```
+
+Schema errors are reported with a code frame and a caret, for example:
+
+```
+error: unknown type 'Strig' at schema.volan:12:10
+  12 |   title    Strig
+                  ^^^^^
+  Did you mean 'String'?
+```
+
+## Dependency configuration reference
+
+The table below summarises the correct Gradle configuration scope for each module.
+
+| Module | Gradle scope | Notes |
+|---|---|---|
+| `volan-bom` | `platform(...)` inside `implementation` | Version alignment only; no code on the classpath |
+| `volan-runtime` | `implementation` | Required at runtime and compile time |
+| `volan-dialect-postgres` | `runtimeOnly` | Discovered via `ServiceLoader`; no import needed |
+| `volan-dialect-mysql` | `runtimeOnly` | Not yet released |
+| `volan-dialect-sqlite` | `runtimeOnly` | Not yet released |
+| `volan-dialect-h2` | `testRuntimeOnly` | Intended for in-memory testing; not yet released |
+| `volan-codegen` | `implementation` (build task classpath) | Build-time only; exclude from published artifacts |
+| `volan-coroutines` | `implementation` | Not yet released |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Walk through writing a schema, generating a client, and running your first query end-to-end.
+  </Card>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Learn what makes Volan different from Hibernate, JOOQ, and Exposed.
+  </Card>
+</CardGroup>

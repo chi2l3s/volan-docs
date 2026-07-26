@@ -1,0 +1,274 @@
+---
+title: "Schema Attributes: Field and Block-Level Reference"
+sidebarTitle: "Attributes"
+description: "Complete reference for all Volan field-level (@) and block-level (@@) schema attributes, their parameters, and how they affect generated code and migrations."
+---
+
+Attributes are annotations you attach to fields or model blocks to configure behaviour such as primary keys, constraints, default values, column naming, and index definitions. Field-level attributes use a single `@` prefix; block-level attributes use `@@` and appear at the bottom of the model body. This page is the authoritative reference for every attribute Volan supports.
+
+## Field-level attributes (`@`)
+
+Field-level attributes appear on the same line as a field declaration, after the type.
+
+### `@id`
+
+Declares this field as the table's primary key. Every model must have exactly one `@id` field or one `@@id` block attribute.
+
+```prisma
+model Product {
+  id Int @id @default(autoincrement())
+}
+```
+
+Volan generates a `findById` method on the client for every model with a single-field primary key.
+
+---
+
+### `@default(value)`
+
+Sets a column default. The value can be a function call or a literal:
+
+| Default expression | Use with | Effect |
+|---|---|---|
+| `autoincrement()` | `Int`, `Long` | Database auto-increment sequence |
+| `now()` | `DateTime` | Current timestamp at insert time |
+| Numeric literal | `Int`, `Long`, `Float`, `Double`, `Decimal` | Fixed numeric default |
+| String literal | `String` | Fixed string default |
+| Boolean literal | `Boolean` | `true` or `false` |
+| Enum value | Any enum type | A value from the referenced enum |
+
+```prisma
+model Order {
+  id        Int      @id @default(autoincrement())
+  status    Status   @default(PENDING)
+  total     Decimal  @default(0)
+  note      String   @default("")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+```
+
+---
+
+### `@unique`
+
+Creates a unique index on this field and generates a `findByFieldName` convenience method on the client.
+
+```prisma
+model User {
+  id    Int    @id @default(autoincrement())
+  email String @unique
+  slug  String @unique
+}
+```
+
+---
+
+### `@updatedAt`
+
+Instructs the Volan client to set this field to the current timestamp on every `UPDATE`. The field must be of type `DateTime`.
+
+```prisma
+model Post {
+  id        Int      @id @default(autoincrement())
+  updatedAt DateTime @updatedAt
+}
+```
+
+<Note>
+  `@updatedAt` is applied in client-generated code, not as a database trigger. If you update rows outside of the Volan client, this field will not be refreshed automatically.
+</Note>
+
+---
+
+### `@map("column_name")`
+
+Maps the field to a database column with a different name. The field's Kotlin property name is unchanged; only the SQL column name differs.
+
+```prisma
+model User {
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+}
+```
+
+---
+
+### `@ignore`
+
+Excludes this field from the generated client. The column remains in the database schema; Volan simply does not read or write it.
+
+```prisma
+model User {
+  id           Int    @id @default(autoincrement())
+  passwordHash String @ignore
+}
+```
+
+<Warning>
+  Because `@ignore` fields are excluded from `SELECT` statements, they will not appear on model instances even if they carry a non-null database value.
+</Warning>
+
+---
+
+### `@relation(...)`
+
+Defines a relation between models. See [Relations](/schema/relations) for full documentation. Parameters:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `fields` | `[fieldName, ...]` | Foreign key field(s) on this model |
+| `references` | `[fieldName, ...]` | Matching field(s) on the referenced model |
+| `onDelete` | `Cascade \| SetNull \| Restrict \| NoAction` | Action when referenced row is deleted |
+| `onUpdate` | `Cascade \| SetNull \| Restrict \| NoAction` | Action when referenced row's key changes |
+
+```prisma
+model Post {
+  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  authorId Int
+}
+```
+
+---
+
+### `@db.*`
+
+Passes a provider-specific type hint to the migration engine. This controls the exact DDL column type without affecting the Kotlin type mapping.
+
+```prisma
+model User {
+  email   String  @db.VarChar(320)
+  bio     String  @db.Text
+  score   Decimal @db.Decimal(10, 2)
+}
+```
+
+The available hints depend on the active `datasource` provider. Volan validates hints against the provider at migration time.
+
+---
+
+## Block-level attributes (`@@`)
+
+Block-level attributes appear inside the model body, conventionally at the bottom, and affect the table as a whole.
+
+### `@@id([field1, field2])`
+
+Declares a composite primary key across multiple fields. Do not use `@id` on any of the listed fields.
+
+```prisma
+model OrderItem {
+  orderId   Int
+  productId Int
+  quantity  Int
+
+  @@id([orderId, productId])
+}
+```
+
+---
+
+### `@@unique([field1, field2])`
+
+Creates a composite unique constraint. Useful when uniqueness spans multiple columns.
+
+```prisma
+model Membership {
+  userId Int
+  orgId  Int
+
+  @@unique([userId, orgId])
+}
+```
+
+---
+
+### `@@index([field1, field2])`
+
+Creates a composite index to speed up queries that filter or sort on multiple columns. You can declare multiple `@@index` blocks on a single model.
+
+```prisma
+model Post {
+  id          Int      @id @default(autoincrement())
+  authorId    Int
+  publishedAt DateTime
+
+  @@index([authorId, publishedAt])
+}
+```
+
+---
+
+### `@@map("table_name")`
+
+Maps the model to a database table with a different name. The Kotlin class name is unchanged.
+
+```prisma
+model User {
+  id Int @id @default(autoincrement())
+
+  @@map("users")
+}
+```
+
+---
+
+### `@@fulltext([field1, field2])`
+
+Creates a full-text search index across the listed fields. Supported on PostgreSQL (with `pg_trgm`) and MySQL.
+
+```prisma
+model Article {
+  id    Int    @id @default(autoincrement())
+  title String
+  body  String
+
+  @@fulltext([title, body])
+}
+```
+
+<Warning>
+  `@@fulltext` is not supported on SQLite. Using it with the `sqlite` provider raises a schema validation error.
+</Warning>
+
+---
+
+### `@@ignore`
+
+Excludes the entire model from the generated client. The table still exists in the database and is still validated by Volan, but no class or query methods are generated.
+
+```prisma
+model LegacyAuditLog {
+  id      Int    @id
+  payload String
+
+  @@ignore
+}
+```
+
+---
+
+## Quick reference
+
+### Field-level (`@`)
+
+| Attribute | Key parameters | Effect |
+|---|---|---|
+| `@id` | — | Primary key |
+| `@default(value)` | expression or literal | Column default |
+| `@unique` | — | Unique constraint + `findBy` helper |
+| `@updatedAt` | — | Auto-set on update (client-side) |
+| `@map("col")` | column name string | Rename column in SQL |
+| `@ignore` | — | Exclude field from client |
+| `@relation(...)` | `fields`, `references`, `onDelete`, `onUpdate` | Define relation join |
+| `@db.*` | provider type | Provider-specific column type hint |
+
+### Block-level (`@@`)
+
+| Attribute | Key parameters | Effect |
+|---|---|---|
+| `@@id([...])` | field list | Composite primary key |
+| `@@unique([...])` | field list | Composite unique constraint |
+| `@@index([...])` | field list | Composite index |
+| `@@map("table")` | table name string | Rename table in SQL |
+| `@@fulltext([...])` | field list | Full-text search index |
+| `@@ignore` | — | Exclude model from client |

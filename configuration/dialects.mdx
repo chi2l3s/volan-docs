@@ -1,0 +1,156 @@
+---
+title: "Database Dialects and Capability Configuration"
+sidebarTitle: "Dialects"
+description: "Learn how Volan auto-discovers database dialects via ServiceLoader, which dialects are available, and what SQL capabilities each database supports."
+---
+
+A dialect is the bridge between Volan's query engine and a specific database. It translates abstract query operations into the SQL syntax and feature set that a particular database understands. Volan ships each dialect as a separate artifact so your runtime classpath only contains what you actually use. This page explains how dialect discovery works, which dialects are available, and what capabilities each database exposes to the query DSL.
+
+## How dialect discovery works
+
+Volan discovers dialects automatically using the Java `ServiceLoader` mechanism. When you call `.build()` on the client builder, Volan inspects the JDBC URL prefix and loads the matching dialect from the classpath — no manual registration or configuration is required.
+
+```
+jdbc:postgresql://...  →  volan-dialect-postgres
+jdbc:mysql://...       →  volan-dialect-mysql      (coming soon)
+jdbc:mariadb://...     →  volan-dialect-mysql      (coming soon)
+jdbc:sqlite:...        →  volan-dialect-sqlite     (coming soon)
+jdbc:h2:...            →  volan-dialect-h2         (coming soon)
+```
+
+Each dialect artifact contains a `ServiceLoader` registration file that maps the URL prefix to the dialect implementation. As long as the artifact is on the runtime classpath, Volan finds it without any code change on your part.
+
+<Note>
+  If Volan cannot find a dialect for the JDBC URL you provided, it throws at `build()` time with a message listing the URL prefix it tried to resolve. Add the missing dialect artifact to fix it.
+</Note>
+
+---
+
+## Adding a dialect to your classpath
+
+To use a dialect, add its artifact as a runtime dependency in your build file. You do not need to reference the dialect anywhere in your Kotlin code.
+
+<Tabs>
+
+<Tab title="Gradle (Kotlin DSL)">
+
+```kotlin
+dependencies {
+    runtimeOnly("io.github.thirtyeighttwentysix:volan-dialect-postgres:0.1.0-SNAPSHOT")
+}
+```
+
+</Tab>
+
+<Tab title="Gradle (Groovy DSL)">
+
+```groovy
+dependencies {
+    runtimeOnly 'io.github.thirtyeighttwentysix:volan-dialect-postgres:0.1.0-SNAPSHOT'
+}
+```
+
+</Tab>
+
+<Tab title="Maven">
+
+```xml
+<dependency>
+  <groupId>io.github.thirtyeighttwentysix</groupId>
+  <artifactId>volan-dialect-postgres</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <scope>runtime</scope>
+</dependency>
+```
+
+</Tab>
+
+</Tabs>
+
+<Warning>
+  The `provider` value in your `datasource` block and the dialect artifact on the classpath must agree. Generating with `provider = "postgresql"` but running against `volan-dialect-mysql` will produce incorrect SQL.
+</Warning>
+
+---
+
+## Available dialects
+
+<CardGroup cols={2}>
+
+<Card title="PostgreSQL" icon="database">
+  **Artifact:** `volan-dialect-postgres`  
+  **Status:** ✅ Available  
+  **URL prefix:** `jdbc:postgresql:`  
+
+  Full support for all current Volan features. Recommended for production workloads.
+</Card>
+
+<Card title="MySQL / MariaDB" icon="database">
+  **Artifact:** `volan-dialect-mysql`  
+  **Status:** 🚧 Coming soon  
+  **URL prefix:** `jdbc:mysql:` / `jdbc:mariadb:`  
+
+  Will support MySQL 8+ and MariaDB 10.5+. Follow the changelog for availability.
+</Card>
+
+<Card title="SQLite" icon="database">
+  **Artifact:** `volan-dialect-sqlite`  
+  **Status:** 🚧 Coming soon  
+  **URL prefix:** `jdbc:sqlite:`  
+
+  Lightweight embedded database support, useful for local development and testing.
+</Card>
+
+<Card title="H2" icon="database">
+  **Artifact:** `volan-dialect-h2`  
+  **Status:** 🚧 Coming soon  
+  **URL prefix:** `jdbc:h2:`  
+
+  In-memory and file-based H2 support, primarily for integration testing in CI.
+</Card>
+
+</CardGroup>
+
+---
+
+## Dialect capabilities
+
+Different databases support different SQL features. Volan exposes these as `DialectCapabilities` flags that the query engine checks at runtime to decide how to construct each statement. You do not call these flags directly — they control internal behaviour automatically.
+
+Understanding which capabilities your database supports helps you anticipate what Volan can and cannot do in your target environment.
+
+| Capability | Description | PostgreSQL |
+|---|---|:---:|
+| `returningClause` | Write operations can read back changed rows in the same statement (`RETURNING`), avoiding a separate `SELECT` round-trip. | ✅ |
+| `insertOnConflict` | Native upsert support via `INSERT ... ON CONFLICT DO UPDATE`. Enables efficient upsert operations without a separate existence check. | ✅ |
+| `caseInsensitiveLike` | Native `ILIKE` operator for case-insensitive pattern matching. On databases without this, Volan falls back to `LOWER(col) LIKE LOWER(?)`. | ✅ |
+| `distinctOn` | `DISTINCT ON (expr)` clause for selecting the first row per group ordered by an expression. | ✅ |
+| `nullsOrdering` | `NULLS FIRST` / `NULLS LAST` in `ORDER BY` clauses. Without this, null ordering is database-defined. | ✅ |
+| `tupleComparison` | Composite cursor pagination using `(col1, col2) > (val1, val2)` tuple comparison, enabling efficient keyset pagination on multi-column cursors. | ✅ |
+| `arrayColumns` | Native array column type (e.g. `TEXT[]`, `INT[]`). Models with array fields require a dialect that supports this capability. | ✅ |
+| `maximumParameters` | Maximum number of bind parameters per statement. Volan splits large `IN (...)` lists across multiple statements when this limit would be exceeded. | 65 535 |
+
+<Tip>
+  PostgreSQL supports every current capability flag, which is one reason it is the recommended database for Volan in production. As MySQL, SQLite, and H2 dialects land, their capability matrices will be documented here.
+</Tip>
+
+---
+
+## Manually overriding the dialect
+
+Auto-discovery covers the vast majority of cases. If you ever need to force a specific dialect — for example, in a test that constructs a client from a URL that does not follow the standard prefix conventions — you can override it on the builder:
+
+```kotlin
+val db = BlogClient.builder()
+    .url("jdbc:postgresql://localhost:5432/testdb")
+    .dialect(PostgresDialect)
+    .build()
+```
+
+<ParamField path="dialect" type="VolanDialect">
+  Forces the given dialect regardless of the URL prefix. The corresponding dialect artifact must still be present on the runtime classpath.
+</ParamField>
+
+<Note>
+  You should rarely need `.dialect()` in production code. If you find yourself using it to work around a discovery failure, check that the dialect artifact is declared as a `runtimeOnly` dependency and has not been accidentally excluded from the final JAR or image.
+</Note>

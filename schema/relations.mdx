@@ -1,0 +1,188 @@
+---
+title: "Defining Relations Between Models in Volan"
+sidebarTitle: "Relations"
+description: "Model one-to-one, one-to-many, many-to-many, and self-referential relations in Volan, configure referential actions, and understand the generated client API."
+---
+
+Relations in Volan are declared directly in the schema using relation fields — fields whose type is another model rather than a scalar. Volan uses these declarations to generate strongly-typed relation accessors on the client and to emit the correct foreign key constraints in migration SQL. This page covers every relation shape Volan supports and how each one translates into generated code.
+
+## The `@relation` attribute
+
+The `@relation` attribute tells Volan how to join two models. It sits on the side of the relation that holds the foreign key.
+
+```prisma
+@relation(fields: [authorId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+```
+
+| Parameter | Description |
+|---|---|
+| `fields` | The foreign key field(s) on this model |
+| `references` | The field(s) on the referenced model that the foreign key points to |
+| `onDelete` | Action to take when the referenced row is deleted |
+| `onUpdate` | Action to take when the referenced row's key is updated |
+
+## One-to-many
+
+A one-to-many relation connects one record in a parent model to any number of records in a child model. The child holds the foreign key; the parent exposes a list field.
+
+```prisma
+model User {
+  id    Int    @id @default(autoincrement())
+  posts Post[]
+}
+
+model Post {
+  id       Int  @id @default(autoincrement())
+  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  authorId Int
+}
+```
+
+In generated Kotlin code:
+
+- `User` has a `posts: List<Post>` relation slot (lazy by default).
+- `Post` has an `author: User` relation slot and an `authorId: Int` scalar field.
+
+## One-to-one
+
+A one-to-one relation links a single record in one model to a single record in another. The side that holds the foreign key must mark it `@unique`.
+
+```prisma
+model User {
+  id      Int      @id @default(autoincrement())
+  profile Profile?
+}
+
+model Profile {
+  id     Int  @id @default(autoincrement())
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId Int  @unique
+}
+```
+
+`Profile.userId` carries `@unique` to enforce the one-to-one constraint at the database level. The `User.profile` field is optional (`Profile?`) because a user may not yet have a profile.
+
+## Many-to-many (implicit join table)
+
+When both sides of a relation are list fields, Volan treats it as a many-to-many and automatically manages the join table. Name the relation the same on both sides using a string literal passed to `@relation`.
+
+```prisma
+model Post {
+  id   Int    @id @default(autoincrement())
+  tags Tag[]  @relation("PostTags")
+}
+
+model Tag {
+  id    Int    @id @default(autoincrement())
+  posts Post[] @relation("PostTags")
+}
+```
+
+Volan creates a `_PostTags` join table with `postId` and `tagId` columns. You do not need to declare this table in your schema — Volan owns it entirely.
+
+<Note>
+  If you need to store extra data on the join (for example, a `createdAt` timestamp), create an explicit join model with two one-to-many relations instead of using the implicit many-to-many form.
+</Note>
+
+## Self-referential relations
+
+A model can relate to itself. This is common for hierarchical data such as organisation trees or comment threads. Name the relation to distinguish the two sides.
+
+```prisma
+model User {
+  id        Int    @id @default(autoincrement())
+  manager   User?  @relation("Reports", fields: [managerId], references: [id], onDelete: SetNull)
+  managerId Int?
+  reports   User[] @relation("Reports")
+}
+```
+
+Here, `manager` is the "belongs to" side and `reports` is the "has many" side. Both use the relation name `"Reports"` so Volan knows they form a pair.
+
+## Referential actions
+
+Referential actions control what happens to child rows when a parent row is deleted or updated.
+
+| Action | Behaviour |
+|---|---|
+| `Cascade` | Delete or update child rows automatically |
+| `SetNull` | Set the foreign key column to `NULL` (field must be optional) |
+| `Restrict` | Prevent the delete or update if child rows exist |
+| `NoAction` | Defer to the database's default behaviour |
+
+```prisma
+model Post {
+  id       Int  @id @default(autoincrement())
+  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  authorId Int
+}
+```
+
+<Warning>
+  Using `SetNull` requires the foreign key field to be declared as optional (`Int?`). Volan will raise a validation error if you combine `SetNull` with a required (non-nullable) foreign key field.
+</Warning>
+
+## Relations in the generated client
+
+### Relation slots
+
+Relation fields are exposed as *relation slots* on generated model classes. A relation slot is not fetched unless you explicitly include it in a query using `include`:
+
+```kotlin
+val user = client.user.findById(1) {
+    include { posts() }
+}
+println(user.posts) // List<Post>
+```
+
+If you access a relation slot that was not included in the query, Volan throws `VolanRelationNotLoadedException` with a message identifying the model and field:
+
+```
+VolanRelationNotLoadedException: Relation 'posts' on model 'User' was not loaded.
+Use include { posts() } in your query to load it.
+```
+
+### Scalar foreign key fields
+
+The scalar foreign key field (e.g. `authorId`) is always fetched alongside the model. You can read it without an `include`.
+
+```kotlin
+val post = client.post.findById(42)
+println(post.authorId) // always available
+println(post.author)   // throws VolanRelationNotLoadedException unless included
+```
+
+<Tip>
+  For write operations, set the scalar foreign key field directly (`authorId = userId`) rather than nesting a full object. Reserve nested writes for cases where you need to create or connect related records in a single transaction.
+</Tip>
+
+## Complete example
+
+```prisma
+model User {
+  id        Int       @id @default(autoincrement())
+  posts     Post[]
+  profile   Profile?
+  manager   User?     @relation("Reports", fields: [managerId], references: [id], onDelete: SetNull)
+  managerId Int?
+  reports   User[]    @relation("Reports")
+}
+
+model Post {
+  id       Int    @id @default(autoincrement())
+  author   User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  authorId Int
+  tags     Tag[]  @relation("PostTags")
+}
+
+model Profile {
+  id     Int  @id @default(autoincrement())
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId Int  @unique
+}
+
+model Tag {
+  id    Int    @id @default(autoincrement())
+  posts Post[] @relation("PostTags")
+}
+```

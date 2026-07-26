@@ -1,0 +1,113 @@
+---
+title: "Creating Records with Volan's Write API"
+sidebarTitle: "Create"
+description: "Learn how to insert single and multiple records using Volan's create and createMany operations, including default fields and validation rules."
+---
+
+Volan's write API gives you a type-safe, schema-driven way to insert data into your database. The `create` and `createMany` operations cover everything from inserting a single row to bulk-loading many records at once, with Volan validating your data before any SQL is sent.
+
+## Creating a single record
+
+Use `db.<model>.create {}` to insert one row and return the fully-populated entity. The `data {}` block is where you set field values. Every field you declare in the schema is available here as a typed property, so the compiler catches typos and type mismatches at build time.
+
+<CodeGroup>
+```kotlin Kotlin
+val user = db.user.create {
+    data {
+        email = "alice@acme.com"
+        name = "Alice"
+        role = Role.USER
+    }
+}
+```
+
+```java Java
+User user = db.user().create(d -> d.data(data -> data
+    .email("alice@acme.com")
+    .name("Alice")
+    .role(Role.USER)
+));
+```
+</CodeGroup>
+
+The returned `user` object contains every field on the model, including those you did not supply yourself.
+
+### What Volan fills in automatically
+
+Fields annotated with `@id`, `@default`, or `@updatedAt` in your schema are handled by Volan or the database — you never set them manually inside `data {}`.
+
+| Annotation | Behaviour |
+|---|---|
+| `@id` with `autoIncrement()` | The database assigns the value; Volan reads it back and populates the returned entity. |
+| `@default(...)` | The declared default expression is applied when the field is omitted. |
+| `@updatedAt` | Volan injects the current timestamp automatically on every write. |
+
+<Note>
+  Attempting to assign a value to an `@id` or `@default` field inside `data {}` will produce a compile-time error — Volan's generated DSL omits those setters intentionally.
+</Note>
+
+### Required vs optional fields
+
+A field is **required** in `create` when it has no `@default`, is not nullable, and is not a relation field managed elsewhere. If you omit a required field, Volan throws `VolanValidationException` before sending any SQL to the database.
+
+```kotlin
+// Missing `email` — throws VolanValidationException immediately
+val user = db.user.create {
+    data {
+        name = "Alice"
+        // email is required but absent
+    }
+}
+```
+
+<Warning>
+  `VolanValidationException` is thrown on the client side, so no partial row is ever inserted. You do not need to wrap a failed `create` in a rollback.
+</Warning>
+
+Optional fields (nullable or carrying a `@default`) can be omitted freely — Volan sends `NULL` or the declared default value for them.
+
+---
+
+## Creating many records at once
+
+`createMany {}` inserts multiple rows in a single statement and returns the number of rows inserted as a `Long`. Each row is defined with a `row {}` block that follows the same typing rules as `data {}` in a regular `create`.
+
+```kotlin
+val count = db.user.createMany {
+    row { email = "alice@acme.com"; name = "Alice" }
+    row { email = "bob@acme.com";   name = "Bob"   }
+}
+// count == 2L
+```
+
+<Note>
+  `createMany` does **not** support nested writes. Adding a relation block inside a `row {}` throws `VolanValidationException` at runtime. If you need to create related records alongside their parent, use `create {}` with a nested write instead — see [Nested Writes](/writing/nested-writes).
+</Note>
+
+### When to prefer `createMany`
+
+<CardGroup cols={2}>
+  <Card title="Bulk inserts" icon="bolt">
+    `createMany` batches all rows into one SQL statement, making it significantly faster than looping over individual `create` calls.
+  </Card>
+  <Card title="Seeding data" icon="database">
+    Use `createMany` in migration seeds or test fixtures where you need to populate many rows quickly and don't require the created entities back.
+  </Card>
+</CardGroup>
+
+### Return value
+
+`createMany` returns a `Long` count, not a list of entities. If you need the created records, run a subsequent `findMany` query filtered by the values you just inserted, or switch to individual `create` calls inside a [transaction](/writing/transactions).
+
+---
+
+## Quick reference
+
+<CardGroup cols={2}>
+  <Card title="create {}" icon="plus">
+    Inserts one row. Returns the full entity with all fields, including generated ones. Throws `VolanValidationException` if required fields are missing.
+  </Card>
+  <Card title="createMany {}" icon="list-plus">
+    Inserts many rows in one statement. Returns a `Long` row count. Does not support nested writes.
+  </Card>
+</CardGroup>

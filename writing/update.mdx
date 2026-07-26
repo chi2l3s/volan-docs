@@ -1,0 +1,100 @@
+---
+title: "Updating Records with Volan's Write API"
+sidebarTitle: "Update"
+description: "Learn how to update one or many records with Volan's update and updateMany operations, including partial updates and automatic timestamp injection."
+---
+
+Volan's update operations let you change specific fields on existing rows without touching anything you didn't explicitly set. Whether you're editing a single record or bulk-patching thousands of rows, the `update` and `updateMany` operations keep your writes precise and predictable.
+
+## Updating a single record
+
+Use `db.<model>.update {}` to modify one row and return the updated entity. The call requires two blocks: a `where {}` filter that identifies the target row, and a `data {}` block containing only the fields you want to change.
+
+<CodeGroup>
+```kotlin Kotlin
+val user = db.user.update {
+    where { id eq 42 }
+    data {
+        name = "Alice Updated"
+    }
+}
+```
+
+```java Java
+User user = db.user().update(u -> u
+    .where(w -> w.id().eq(42))
+    .data(d -> d.name("Alice Updated"))
+);
+```
+</CodeGroup>
+
+The returned `user` reflects the row's state after the update, including any fields that were already set and any `@updatedAt` timestamps injected by Volan.
+
+### Partial updates — only touched fields change
+
+Fields you omit from `data {}` are left exactly as they are in the database. Volan generates a `SET` clause that contains only the columns you explicitly assigned. This means you can safely update a single field on a record with dozens of columns without risking accidental data loss.
+
+```kotlin
+// Only the `role` column is updated — every other column is untouched
+val user = db.user.update {
+    where { id eq 42 }
+    data {
+        role = Role.ADMIN
+    }
+}
+```
+
+<Tip>
+  Because updates are partial by default, you never need to fetch a record first just to re-supply its existing values. Pass only what should change.
+</Tip>
+
+### `@updatedAt` auto-injection
+
+Fields annotated with `@updatedAt` in your schema are updated automatically by Volan on every `update` and `updateMany` call. You don't add them to `data {}` — Volan injects the current UTC timestamp into the SQL statement for you.
+
+### Throws when the record is not found
+
+If the `where {}` filter matches no row, `update` throws `VolanNotFoundException`. This prevents silent no-ops from going undetected in your application logic.
+
+<Warning>
+  Always handle `VolanNotFoundException` in code paths where a record's existence is not guaranteed. If you want a create-or-update semantic, use [`upsert`](/writing/create#upsert) instead.
+</Warning>
+
+---
+
+## Updating many records
+
+`updateMany {}` applies the same `data {}` changes to every row that matches the `where {}` filter, then returns the number of affected rows as a `Long`.
+
+```kotlin
+val count = db.user.updateMany {
+    where { role eq Role.USER }
+    data  { role = Role.ADMIN }
+}
+// count == number of rows whose role was changed
+```
+
+<Note>
+  `updateMany` does not return the updated entities — only the row count. If you need the records after the update, run a `findMany` query with the same filter afterwards, or perform the updates inside a [transaction](/writing/transactions).
+</Note>
+
+### Scoping your filter
+
+The `where {}` block in `updateMany` supports the same filter operators as `findMany`: equality, comparisons, logical combinators (`and`, `or`, `not`), and relation filters. Always verify your filter returns the intended scope before running it in production.
+
+<Warning>
+  Calling `updateMany` with no `where {}` block, or a filter that matches every row, will update your entire table. Test filters with a `findMany` first.
+</Warning>
+
+---
+
+## Quick reference
+
+<CardGroup cols={2}>
+  <Card title="update {}" icon="pencil">
+    Updates one row matched by `where {}`. Returns the full updated entity. Throws `VolanNotFoundException` if no row is found. Only the fields you set in `data {}` are changed.
+  </Card>
+  <Card title="updateMany {}" icon="pencil-line">
+    Updates all rows matched by `where {}`. Returns a `Long` row count. `@updatedAt` fields are injected automatically.
+  </Card>
+</CardGroup>

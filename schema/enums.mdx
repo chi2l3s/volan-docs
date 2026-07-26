@@ -1,0 +1,154 @@
+---
+title: "Enums in Volan: Definition and Generated Code"
+sidebarTitle: "Enums"
+description: "Declare Volan enums, map values and table names to custom database strings, and understand the generated Kotlin enum class with databaseValue and fromDatabaseValue()."
+---
+
+Enums let you define a fixed set of named values and use them as field types in your models. Volan stores enum values in the database as strings and generates a Kotlin `enum class` that handles serialisation and deserialisation automatically. You can control exactly what string is written to the database without affecting the Kotlin name.
+
+## Basic enum syntax
+
+Declare an enum with the `enum` keyword, a PascalCase name, and one or more values in ALL_CAPS:
+
+```prisma
+enum Role {
+  USER
+  ADMIN
+  MODERATOR
+}
+```
+
+You can then use `Role` as a field type in any model:
+
+```prisma
+model User {
+  id   Int    @id @default(autoincrement())
+  role Role   @default(USER)
+}
+```
+
+## Mapping enum values to custom database strings
+
+By default, Volan stores each enum value under its declared name (e.g. `"USER"`, `"ADMIN"`). Use `@map` on individual values to override this:
+
+```prisma
+enum Role {
+  USER
+  ADMIN      @map("administrator")
+  MODERATOR  @map("mod")
+}
+```
+
+With this declaration, the `ADMIN` Kotlin constant is stored as `"administrator"` in the database, and `MODERATOR` is stored as `"mod"`. The Kotlin constant names are unaffected — your application code always uses `Role.ADMIN`.
+
+## Mapping the enum itself to a custom type name
+
+Use `@@map` on the enum block to control the name of the enum type in the database (relevant for PostgreSQL native enums and for documentation purposes on other databases):
+
+```prisma
+enum Role {
+  USER
+  ADMIN @map("administrator")
+
+  @@map("user_role")
+}
+```
+
+## Generated Kotlin code
+
+Volan generates a Kotlin `enum class` with a `databaseValue` property on each constant and a companion `fromDatabaseValue()` factory:
+
+```kotlin
+enum class Role(val databaseValue: String) {
+    USER("USER"),
+    ADMIN("administrator"),
+    MODERATOR("mod");
+
+    companion object {
+        fun fromDatabaseValue(value: String): Role =
+            entries.first { it.databaseValue == value }
+    }
+}
+```
+
+| Member | Description |
+|---|---|
+| `databaseValue: String` | The string value written to and read from the database column |
+| `fromDatabaseValue(value)` | Looks up the enum constant whose `databaseValue` matches the given string; throws `NoSuchElementException` if not found |
+
+When Volan reads a row from the database it calls `fromDatabaseValue()` automatically. You only need to call it directly if you are working with raw query results.
+
+## Using enums as field defaults
+
+Pass an enum value (without a class prefix) to `@default` to set a column default:
+
+```prisma
+model User {
+  id   Int  @id @default(autoincrement())
+  role Role @default(USER)
+}
+```
+
+The default is applied at the database level as the mapped string (`"USER"` in this case) and also enforced by the generated client when inserting a record without an explicit `role`.
+
+<Note>
+  The value you pass to `@default` must be one of the enum constants declared in the schema — Volan validates this at schema parse time and will report an error if it does not match.
+</Note>
+
+## Doc comments on enums
+
+Use `///` doc comments on enum declarations and individual values to carry documentation into generated Kotlin code:
+
+```prisma
+/// The access role assigned to a user account.
+enum Role {
+  /// Standard authenticated user.
+  USER
+  /// Full administrative access.
+  ADMIN @map("administrator")
+}
+```
+
+The generated enum class and its constants will include the corresponding KDoc comments.
+
+## Complete example
+
+```prisma
+/// The access role assigned to a user account.
+enum Role {
+  USER
+  ADMIN      @map("administrator")
+  MODERATOR  @map("mod")
+
+  @@map("user_role")
+}
+
+model User {
+  id   Int    @id @default(autoincrement())
+  role Role   @default(USER)
+
+  @@map("users")
+}
+```
+
+Generated Kotlin:
+
+```kotlin
+/** The access role assigned to a user account. */
+enum class Role(val databaseValue: String) {
+    /** Standard authenticated user. */
+    USER("USER"),
+    /** Full administrative access. */
+    ADMIN("administrator"),
+    MODERATOR("mod");
+
+    companion object {
+        fun fromDatabaseValue(value: String): Role =
+            entries.first { it.databaseValue == value }
+    }
+}
+```
+
+<Tip>
+  If your database already contains string values that differ from your preferred Kotlin constant names, use `@map` to bridge the gap rather than renaming the constants. This keeps your Kotlin code idiomatic without requiring a data migration.
+</Tip>

@@ -1,0 +1,166 @@
+---
+title: "Defining Models in Your Volan Schema"
+sidebarTitle: "Models"
+description: "Define database tables as Volan models, declare fields with cardinality, and configure table names, composite keys, unique constraints, and indexes."
+---
+
+A model in Volan represents a database table and becomes the foundation for a generated type-safe client class. You declare a model with the `model` keyword, give it a PascalCase name, and list its fields inside curly braces. Every model must have at least one field that serves as its primary key.
+
+## Basic model syntax
+
+```prisma
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+}
+```
+
+Each line inside the block is a field declaration: a name, a type, and zero or more attributes. The model name becomes the class name in generated code; the field names become properties.
+
+## Field cardinality
+
+Every field has a cardinality that controls whether a value is required, nullable, or a collection.
+
+| Syntax | Meaning | Generated Kotlin type |
+|---|---|---|
+| `String` | Required — must always have a value | `String` |
+| `String?` | Optional — may be `null` | `String?` |
+| `String[]` | List — stored as an array column | `List<String>` |
+
+```prisma
+model Article {
+  id       Int      @id @default(autoincrement())
+  title    String           // required
+  subtitle String?          // optional (nullable)
+  tags     String[]         // list (array column)
+}
+```
+
+<Note>
+  List fields (`[]`) are supported on PostgreSQL array columns. On MySQL and SQLite, use a serialised JSON field or a join table instead.
+</Note>
+
+## Mapping a model to a custom table name
+
+By default, Volan maps a model to a table whose name is the lowercase, snake_case version of the model name. Use `@@map` to override this:
+
+```prisma
+model User {
+  id    Int    @id @default(autoincrement())
+  email String @unique
+
+  @@map("users")
+}
+```
+
+This is especially useful when your database has an established naming convention that differs from Volan's defaults, or when you are mapping Volan onto an existing schema.
+
+## Composite primary key
+
+When no single field uniquely identifies a row, declare a composite primary key with `@@id`:
+
+```prisma
+model PostTag {
+  postId Int
+  tagId  Int
+
+  @@id([postId, tagId])
+}
+```
+
+Fields listed in `@@id` must not also carry an `@id` attribute.
+
+## Unique constraints
+
+Use `@unique` on a single field or `@@unique` on a combination of fields.
+
+```prisma
+model User {
+  id       Int    @id @default(autoincrement())
+  email    String @unique
+}
+
+model Membership {
+  userId Int
+  orgId  Int
+
+  @@unique([userId, orgId])
+}
+```
+
+The generated client exposes `findByEmail` helpers for `@unique` fields and enforces uniqueness at the database level for both forms.
+
+## Indexes
+
+Add a composite index with `@@index` to speed up queries that filter or sort on multiple columns:
+
+```prisma
+model Post {
+  id          Int      @id @default(autoincrement())
+  authorId    Int
+  publishedAt DateTime
+
+  @@index([authorId, publishedAt])
+}
+```
+
+You can define as many `@@index` blocks as you need. Volan emits the corresponding `CREATE INDEX` statements during migration.
+
+## Full-text indexes
+
+For databases that support it (PostgreSQL with `pg_trgm`, MySQL), declare a full-text index with `@@fulltext`:
+
+```prisma
+model Article {
+  id      Int    @id @default(autoincrement())
+  title   String
+  body    String
+
+  @@fulltext([title, body])
+}
+```
+
+<Warning>
+  `@@fulltext` is not supported on SQLite. Volan will raise a validation error if you use it with the `sqlite` provider.
+</Warning>
+
+## Ignoring a model
+
+Mark a model with `@@ignore` to exclude it entirely from the generated client. Volan will still validate its fields, but no class or query methods are generated for it.
+
+```prisma
+model LegacyAuditLog {
+  id      Int    @id
+  payload String
+
+  @@ignore
+}
+```
+
+This is useful for tables that exist in the database but are not managed by your application code.
+
+## A complete example
+
+The following model brings together most of the features described on this page:
+
+```prisma
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique @db.VarChar(320)
+  name      String?
+  role      Role     @default(USER)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+  posts     Post[]
+  profile   Profile?
+
+  @@index([email, createdAt])
+  @@map("users")
+}
+```
+
+<Tip>
+  Keep model names singular and PascalCase (`User`, not `Users` or `user`). Volan's pluralisation logic assumes this convention when naming generated helpers.
+</Tip>

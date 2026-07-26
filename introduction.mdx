@@ -1,0 +1,124 @@
+---
+title: "Volan: Schema-First ORM for Kotlin and Java"
+sidebarTitle: "Introduction"
+description: "Volan is a schema-first ORM for the JVM. Write one schema file, get a type-safe client for Kotlin and Java — no reflection, no lazy-loading surprises."
+---
+
+Volan is a schema-first ORM for the JVM that brings the Prisma developer experience to Kotlin and Java. You describe your entire data model in a single `schema.volan` file, run the code generator at build time, and receive a fully type-safe client — no annotations scattered across your domain classes, no runtime reflection on the hot path, and no hidden queries hiding behind lazy proxies.
+
+## The core workflow
+
+Every Volan project follows the same three-step cycle: write your schema, generate a client, then query with full type safety.
+
+<Steps>
+  <Step title="Describe your data model">
+    Write a `schema.volan` file using Prisma-like syntax. Define your datasource, models, enums, and relations in one place.
+
+    ```prisma schema.volan
+    datasource db {
+      provider = "postgresql"
+      url      = env("DATABASE_URL")
+    }
+
+    generator client {
+      provider     = "volan-kotlin"
+      package      = "com.example.blog"
+      output       = "build/generated/volan"
+      javaFriendly = true
+    }
+
+    model User {
+      id        Int      @id @default(autoincrement())
+      email     String   @unique
+      name      String?
+      posts     Post[]
+      createdAt DateTime @default(now())
+
+      @@map("users")
+    }
+    ```
+  </Step>
+
+  <Step title="Run the code generator">
+    The `VolanGenerator` task runs at build time and writes a client class (named after your output package) into your build directory. No annotation processors, no runtime weaving.
+
+    ```bash
+    ./gradlew generateVolanClient
+    ```
+  </Step>
+
+  <Step title="Query with type safety">
+    Use the generated client. The compiler catches field typos, missing `where` clauses, and mismatched types — before you ever touch a database.
+
+    ```kotlin Kotlin
+    val users = db.user.findMany {
+        where {
+            email endsWith "@acme.com"
+            createdAt gt Instant.now().minus(30.days)
+        }
+        include { posts { take = 5 } }
+        orderBy { createdAt.desc() }
+        take = 20
+    }
+    ```
+
+    ```java Java
+    List<User> users = db.user().findMany(q -> q
+            .where(w -> w.email().endsWith("@acme.com"))
+            .include(i -> i.posts(p -> p.take(5)))
+            .orderBy(User_.CREATED_AT.desc())
+            .take(20));
+    ```
+  </Step>
+</Steps>
+
+## What makes Volan different
+
+Volan was designed to address the most common pain points with existing JVM ORMs. The table below summarises where it fits.
+
+| | Volan | Hibernate / JPA | Exposed | JOOQ |
+|---|---|---|---|---|
+| Source of truth | Schema file | Annotated classes | Kotlin table objects | Database |
+| Type-safe queries | Generated DSL | JPQL strings / Criteria | DSL | Generated DSL |
+| Runtime reflection | None on mapping path | Extensive | Some | None |
+| Declarative migrations | Built in | External (Flyway / Liquibase) | External | External |
+| Nested writes | Built in | Cascades | Manual | Manual |
+| Java-first API | Yes, tested in Java | Yes | Awkward | Yes |
+| Lazy loading surprises | None by design | Common | Explicit | N/A |
+
+<CardGroup cols={2}>
+  <Card title="No runtime reflection" icon="bolt">
+    Row mapping is straight-line generated code. There are no proxies, no persistence contexts, and no magic `@Entity` scanning at startup.
+  </Card>
+  <Card title="No hidden queries" icon="eye">
+    Relations are never lazy. Every relation you want must appear in an `include` block. N+1 queries are structurally impossible — and the test suite asserts the statement count.
+  </Card>
+  <Card title="Java is a first-class target" icon="coffee">
+    The public API is validated against a Java-language test suite. No Kotlin-only types leak into Java callers, and there are no `Continuation` parameters in sight.
+  </Card>
+  <Card title="Errors that teach" icon="circle-info">
+    Schema problems are reported with a code frame, a caret pointing at the offending token, and a suggested fix — before the generator ever writes a file.
+  </Card>
+</CardGroup>
+
+## Supported databases
+
+PostgreSQL is the primary supported database today, with full integration test coverage. MySQL, MariaDB, SQLite, and H2 are the next targets for the 1.0 release, in that order of priority.
+
+<Note>
+  Only PostgreSQL is fully supported in the current release. The other dialects listed in the BOM (`volan-dialect-mysql`, `volan-dialect-sqlite`, `volan-dialect-h2`) are reserved for upcoming milestones. See the [Installation](/installation) page for the full module list.
+</Note>
+
+## Current status
+
+Volan is pre-1.0 and under active development. It is built in public, milestone by milestone. The project is not yet published to Maven Central — you can use it today by building from source or installing to your local Maven repository.
+
+<Warning>
+  APIs may change between releases while the project is pre-1.0. Review the [ROADMAP](https://github.com/thirtyeighttwentysix/volan/blob/main/ROADMAP.md) and [CHANGELOG](https://github.com/thirtyeighttwentysix/volan) before upgrading in a production project.
+</Warning>
+
+## Next steps
+
+<Card title="Quickstart" icon="rocket" href="/quickstart">
+  Add Volan to your Gradle project, write your first schema, and run your first query in minutes.
+</Card>

@@ -1,0 +1,212 @@
+---
+title: "Loading Relations and Avoiding N+1 Queries in Volan"
+sidebarTitle: "Relations"
+description: "Eagerly load related models in a single batched round-trip, filter and paginate included relations, and safely access loaded vs unloaded associations."
+---
+
+Volan models are related to one another through fields annotated with `@relation`. When you run a read query, related models are **not loaded automatically** — you must explicitly request them inside an `include { }` block. This design keeps query costs visible and predictable, and it allows Volan to load every relation in a single batched statement rather than issuing one query per row.
+
+## Including relations with `include { }`
+
+Add an `include { }` block to any `findMany`, `findFirst`, `findFirstOrThrow`, `findUnique`, or `findUniqueOrThrow` call. Inside the block, name the relations you want to load.
+
+<CodeGroup>
+```kotlin Kotlin
+val users = db.user.findMany {
+    include {
+        posts {}
+        profile {}
+    }
+}
+
+users[0].posts    // List<Post>
+users[0].profile  // Profile? (null if the user has no profile)
+```
+
+```java Java
+List<User> users = db.user().findMany(q -> q
+    .include(i -> i
+        .posts()
+        .profile()
+    )
+);
+```
+</CodeGroup>
+
+<Note>
+  Optional one-to-one relations return `null` when no related record exists. Required relations (non-nullable in the schema) are always non-null if the data is consistent.
+</Note>
+
+## Filtering and paginating included relations
+
+Each relation in the `include { }` block accepts its own `where`, `orderBy`, `take`, and `skip` clauses. The filters apply only to the included relation, not to the parent query.
+
+```kotlin
+val users = db.user.findMany {
+    include {
+        posts {
+            where { draft eq false }
+            orderBy { createdAt.desc() }
+            take = 5
+        }
+        profile {}
+    }
+}
+// Each user includes at most 5 published posts, newest first
+```
+
+This is especially useful for "preview" scenarios — for example, showing the three most recent comments on each post in a feed.
+
+## Nested includes
+
+Relations can be nested to any depth. Each level is loaded as its own batched query.
+
+```kotlin
+val users = db.user.findMany {
+    include {
+        posts {
+            include {
+                comments {
+                    orderBy { createdAt.asc() }
+                }
+                tags {}
+            }
+        }
+    }
+}
+
+users[0].posts[0].comments  // List<Comment>
+users[0].posts[0].tags      // List<Tag>
+```
+
+<Tip>
+  Deep nesting is convenient but adds one database round-trip per relation level. Profile the query counts in development with Volan's query logger if you suspect unnecessary depth.
+</Tip>
+
+## How Volan loads relations — no N+1 by design
+
+The most common ORM performance mistake is the **N+1 problem**: fetching a list of N parent records and then issuing one query per parent to load its children. Volan's loading strategy makes this structurally impossible.
+
+When you include a relation, Volan:
+
+1. Runs the parent query and collects all parent primary keys.
+2. Issues **one** `WHERE fk IN (?, ?, ...)` query per relation at that level, regardless of how many parent rows were returned.
+3. Stitches the results back onto the parent objects in memory.
+
+```
+// For 1000 users with posts included, Volan issues exactly two queries:
+SELECT * FROM users WHERE ...;
+SELECT * FROM posts WHERE user_id IN (1, 2, 3, ..., 1000);
+```
+
+If the `IN` list would exceed the driver's parameter limit, Volan chunks it automatically into batches and unions the results — you never need to manage this yourself.
+
+## Accessing loaded vs unloaded relations
+
+If you access a relation on a model instance that was **not** included in the query, Volan throws `VolanRelationNotLoadedException` rather than silently issuing a lazy query.
+
+```kotlin
+val users = db.user.findMany {}  // no include block
+
+users[0].posts  // ❌ throws VolanRelationNotLoadedException
+```
+
+This strict behaviour prevents accidental lazy loading and keeps your query counts explicit.
+
+### Checking whether a relation is loaded
+
+Use `isRelationLoaded` to check before accessing:
+
+```kotlin
+if (user.isRelationLoaded(User::posts)) {
+    render(user.posts)
+} else {
+    renderPlaceholder()
+}
+```
+
+### `relationIfLoaded`
+
+`relationIfLoaded` returns the relation value if it was included, or `null` otherwise — without throwing:
+
+```kotlin
+val posts = user.relationIfLoaded(User::posts)  // List<Post>? — null if not loaded
+```
+
+This is useful in shared model-to-DTO mapping code where the same object type may or may not have its relations populated depending on the call site.
+
+## Relation filters in `where { }`
+
+You can also use relations as filter criteria without including them in the result. See the full documentation in [Filtering](/querying/filtering), but here is a quick reference:
+
+### `some { }` — at least one related record matches
+
+```kotlin
+db.post.findMany {
+    where {
+        tags { some { name eq "kotlin" } }
+    }
+}
+```
+
+### `none { }` — no related records match
+
+```kotlin
+db.user.findMany {
+    where {
+        posts { none { draft eq true } }
+    }
+}
+```
+
+### `every { }` — all related records match
+
+```kotlin
+db.user.findMany {
+    where {
+        posts { every { draft eq false } }
+    }
+}
+```
+
+### `matches { }` and `notMatches { }` — to-one relations
+
+```kotlin
+db.post.findMany {
+    where {
+        author { matches { role eq Role.ADMIN } }
+    }
+}
+```
+
+<Note>
+  Volan uses `matches` / `notMatches` rather than `is` / `isNot` because `is` is a reserved keyword in Kotlin.
+</Note>
+
+These relation filters generate efficient `EXISTS` / `NOT EXISTS` sub-queries and do not load the related records into memory.
+
+## Java equivalent
+
+```java
+List<User> users = db.user().findMany(q -> q
+    .include(i -> i
+        .posts(p -> p
+            .where(w -> w.draft().eq(false))
+            .orderBy(Post_.CREATED_AT.desc())
+            .take(5)
+        )
+        .profile()
+    )
+);
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Filtering" icon="filter" href="/querying/filtering">
+    Use relation filters in your where clauses to narrow results without loading data.
+  </Card>
+  <Card title="Aggregation" icon="sigma" href="/querying/aggregation">
+    Count and aggregate across related models using groupBy.
+  </Card>
+</CardGroup>

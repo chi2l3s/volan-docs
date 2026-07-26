@@ -1,0 +1,481 @@
+---
+title: "Volan Schema Diagnostic Codes Reference"
+sidebarTitle: "Error Codes"
+description: "Complete reference for all Volan schema diagnostic codes — lexer, parser, and semantic errors plus warnings — with causes and fixes."
+---
+
+Volan's schema compiler emits structured diagnostics whenever it encounters a problem in your `.volan` schema file. Every diagnostic has a unique code, a human-readable message, and a source location. This page lists every code organised by phase, so you can quickly understand what went wrong and how to correct it.
+
+Diagnostics follow a Rust-style format with the code and message on the first line, then a file/line/column pointer and an inline annotation:
+
+```
+error[E0104]: field declaration is missing its type
+  --> schema.volan:12:5
+   |
+12 |   name
+   |   ^^^^ expected a type here, e.g. `name String`
+```
+
+---
+
+## Lexer Errors (E000x)
+
+Lexer errors occur before any parsing takes place. The schema compiler cannot tokenise the input and will not attempt to continue.
+
+<Accordion title="E0001 — UNTERMINATED_STRING">
+
+**Cause:** A string literal opened with `"` is not closed before the end of the line.
+
+```volan
+// ❌ missing closing quote
+datasource db {
+  url = "postgresql://localhost/mydb
+}
+```
+
+**Fix:** Close the string on the same line.
+
+```volan
+// ✅
+datasource db {
+  url = "postgresql://localhost/mydb"
+}
+```
+
+</Accordion>
+
+<Accordion title="E0002 — INVALID_ESCAPE_SEQUENCE">
+
+**Cause:** A string literal contains a backslash followed by a character that is not a recognised escape (`\n`, `\t`, `\\`, `\"`, `\r`).
+
+```volan
+// ❌ \x is not a valid escape
+@default("\xAB")
+```
+
+**Fix:** Use a valid escape sequence or remove the backslash.
+
+</Accordion>
+
+<Accordion title="E0003 — UNEXPECTED_CHARACTER">
+
+**Cause:** The lexer encountered a character that is not valid anywhere in a Volan schema, such as `$`, `%`, or a bare `#`.
+
+**Fix:** Remove or replace the character. If you intended a comment, use `//`.
+
+</Accordion>
+
+<Accordion title="E0004 — BLOCK_COMMENT_NOT_SUPPORTED">
+
+**Cause:** A `/* … */` style block comment was found. Volan only supports line comments (`//`) and doc comments (`///`).
+
+```volan
+/* ❌ block comment */
+model User { … }
+```
+
+**Fix:** Replace with line comments.
+
+```volan
+// ✅ line comment
+model User { … }
+```
+
+</Accordion>
+
+<Accordion title="E0005 — MALFORMED_NUMBER">
+
+**Cause:** A numeric literal could not be parsed — for example `1_` (trailing underscore), `0x` (incomplete hex), or `1.2.3`.
+
+**Fix:** Correct the number literal to a valid integer or floating-point value.
+
+</Accordion>
+
+---
+
+## Parser Errors (E01xx)
+
+Parser errors occur when the token stream does not match the expected grammar. Volan attempts error recovery and may report multiple parser errors in a single pass.
+
+<Accordion title="E0100 — EXPECTED_DECLARATION">
+
+**Cause:** The parser expected a top-level keyword (`model`, `enum`, `datasource`, `generator`) but found something else.
+
+**Fix:** Ensure every top-level item starts with one of the four supported keywords. Remove stray tokens.
+
+</Accordion>
+
+<Accordion title="E0101 — EXPECTED_NAME">
+
+**Cause:** A declaration keyword was found but was not followed by an identifier.
+
+```volan
+// ❌
+model {
+  id Int @id
+}
+```
+
+**Fix:** Provide a name immediately after the keyword.
+
+```volan
+// ✅
+model User {
+  id Int @id
+}
+```
+
+</Accordion>
+
+<Accordion title="E0102 — EXPECTED_OPENING_BRACE">
+
+**Cause:** After the declaration keyword and name, `{` was expected but not found.
+
+**Fix:** Add an opening brace after the declaration name.
+
+</Accordion>
+
+<Accordion title="E0103 — UNCLOSED_BLOCK">
+
+**Cause:** A block was opened with `{` but the matching `}` was never found.
+
+**Fix:** Add a closing `}` at the correct indentation level.
+
+</Accordion>
+
+<Accordion title="E0104 — EXPECTED_FIELD_TYPE">
+
+**Cause:** A field name was found inside a model but no type followed it.
+
+```volan
+// ❌
+model Post {
+  title   // no type
+}
+```
+
+**Fix:** Add the field type after the name.
+
+```volan
+// ✅
+model Post {
+  title String
+}
+```
+
+</Accordion>
+
+<Accordion title="E0105 — EXPECTED_EQUALS">
+
+**Cause:** Inside a `datasource` or `generator` block, a config key was found but `=` was missing.
+
+```volan
+// ❌
+datasource db {
+  url "postgresql://…"
+}
+```
+
+**Fix:** Add `=` between the key and value.
+
+</Accordion>
+
+<Accordion title="E0106 — EXPECTED_EXPRESSION">
+
+**Cause:** An expression (string, number, boolean, env call, array) was expected but nothing valid was found.
+
+**Fix:** Supply the missing value.
+
+</Accordion>
+
+<Accordion title="E0107 — UNCLOSED_ARGUMENT_LIST">
+
+**Cause:** An attribute's argument list was opened with `(` but never closed.
+
+```volan
+// ❌
+id Int @id(
+```
+
+**Fix:** Close the argument list with `)`.
+
+</Accordion>
+
+<Accordion title="E0108 — UNCLOSED_LIST">
+
+**Cause:** An array literal `[…]` was opened but never closed.
+
+**Fix:** Add a closing `]`.
+
+</Accordion>
+
+<Accordion title="E0109 — OPTIONAL_LIST_TYPE">
+
+**Cause:** You wrote `Type[]?`. List fields cannot be optional.
+
+```volan
+// ❌
+tags String[]?
+```
+
+**Fix:** Use `Type[]` (lists are always non-null).
+
+```volan
+// ✅
+tags String[]
+```
+
+</Accordion>
+
+<Accordion title="E0110 — NESTED_LIST_TYPE">
+
+**Cause:** `Type[][]` (nested lists) is not supported.
+
+**Fix:** Flatten to `Type[]`.
+
+</Accordion>
+
+<Accordion title="E0111 — REPEATED_OPTIONAL_MARKER">
+
+**Cause:** `??` was written instead of a single `?`.
+
+**Fix:** Remove the extra `?`.
+
+</Accordion>
+
+<Accordion title="E0112 — WRONG_ATTRIBUTE_FORM">
+
+**Cause:** A field attribute `@attr` was used where a model attribute `@@attr` is required, or vice versa.
+
+```volan
+// ❌ @@unique is a model-level attribute
+model User {
+  email String @unique  // ✅ this is fine
+  @@id([id])            // correct form
+  @id([id])             // ❌ wrong form for model-level
+}
+```
+
+**Fix:** Change `@` to `@@` or `@@` to `@` as appropriate.
+
+</Accordion>
+
+<Accordion title="E0113 — EXPECTED_ATTRIBUTE_NAME">
+
+**Cause:** A bare `@` was found without a following identifier.
+
+**Fix:** Add the attribute name, e.g. `@id`, `@default`.
+
+</Accordion>
+
+<Accordion title="E0114 — EXPECTED_ATTRIBUTE_MEMBER">
+
+**Cause:** An attribute namespace prefix `@ns.` was found but no member name followed the dot.
+
+**Fix:** Complete the attribute name, e.g. `@db.VarChar`.
+
+</Accordion>
+
+<Accordion title="E0115 — EXPECTED_ARGUMENT_VALUE">
+
+**Cause:** A named argument `name:` was found but no value followed.
+
+```volan
+// ❌
+@relation(fields:)
+```
+
+**Fix:** Provide the argument value.
+
+</Accordion>
+
+<Accordion title="E0116 — UNEXPECTED_TOP_LEVEL_TOKEN">
+
+**Cause:** A token that is not valid at the top level of a schema (e.g. a bare string) was encountered.
+
+**Fix:** Remove the stray token or wrap it inside a block.
+
+</Accordion>
+
+<Accordion title="E0117 — EMPTY_MODEL">
+
+**Cause:** A `model` block contains no field declarations.
+
+```volan
+// ❌
+model Empty {}
+```
+
+**Fix:** Add at least one field.
+
+</Accordion>
+
+<Accordion title="E0118 — EMPTY_ENUM">
+
+**Cause:** An `enum` block contains no values.
+
+**Fix:** Add at least one enum variant.
+
+</Accordion>
+
+<Accordion title="E0119 — EXPECTED_CONFIGURATION_VALUE">
+
+**Cause:** A config entry inside `datasource` or `generator` has a key and `=` but the value is missing or invalid.
+
+**Fix:** Supply a valid value: a string, `env("VAR")`, or an array of strings.
+
+</Accordion>
+
+<Accordion title="E0120 — ATTRIBUTE_NOT_ALLOWED_HERE">
+
+**Cause:** An attribute was placed in a context that does not accept it (e.g. inside an `enum` value where it is unsupported).
+
+**Fix:** Remove the attribute or move it to a supported context.
+
+</Accordion>
+
+<Accordion title="E0121 — UNEXPECTED_TOKEN_IN_BLOCK">
+
+**Cause:** A token that is not valid inside the current block type was found.
+
+**Fix:** Remove the token or ensure it belongs inside the current block.
+
+</Accordion>
+
+---
+
+## Semantic Errors (E02xx)
+
+Semantic errors are reported after the schema parses successfully. They represent logical or type-level inconsistencies that make the schema invalid.
+
+### Naming and Duplicates
+
+| Code | Description |
+|------|-------------|
+| `E0200` | Duplicate model name — two `model` blocks share the same name |
+| `E0201` | Duplicate field name within a model |
+| `E0202` | Duplicate enum name |
+| `E0203` | Duplicate enum value name within the same enum |
+| `E0234` | Duplicate `datasource` or `generator` declaration |
+
+### Type Resolution
+
+<Accordion title="E0204 — Unknown type referenced">
+
+**Cause:** A field type refers to a model or enum name that does not exist in the schema.
+
+```volan
+// ❌ — Category is not defined
+model Post {
+  category Category
+}
+```
+
+**Fix:** Define the missing type or correct the spelling.
+
+</Accordion>
+
+### Identity
+
+| Code | Description |
+|------|-------------|
+| `E0205` | A model has neither a field-level `@id` nor a model-level `@@id` — every model must have exactly one identity |
+| `E0206` | A field name listed in `@@id([…])` does not exist on the model |
+| `E0223` | `@@id` is used on a model that already has a field-level `@id` — choose one form |
+| `E0229` | A field that is part of a composite `@@id` is marked nullable (`?`) |
+| `E0232` | A field annotated with `@id` is also marked nullable (`?`) |
+
+### Defaults
+
+| Code | Description |
+|------|-------------|
+| `E0207` | `@default` on an `@id` field — use `@id` alone (auto-increment / UUID is implied by the type) |
+| `E0208` | `@default` value type does not match the field type |
+| `E0220` | `@default` on a relation field — defaults on relations are not supported |
+| `E0221` | `@default(autoincrement())` on a non-integer field |
+| `E0222` | `@default(now())` on a non-DateTime field |
+| `E0233` | `@default` on a nullable field with no sensible default |
+
+### Relations
+
+<Accordion title="E0209 — @relation on a non-relation field">
+
+**Cause:** `@relation` was placed on a scalar field (e.g. `String`, `Int`).
+
+**Fix:** Remove `@relation` from scalar fields. Only fields whose type is another model need `@relation`.
+
+</Accordion>
+
+| Code | Description |
+|------|-------------|
+| `E0210` | `fields:` in `@relation` references a field that does not exist on the model |
+| `E0211` | The number of columns in `references:` does not match the number in `fields:` |
+| `E0212` | Both ends of the same relation define `fields:` — only the owning side should |
+| `E0213` | Neither end of the relation defines `fields:` for a required one-to-one or many-to-one |
+| `E0214` | A referential action (`onDelete`, `onUpdate`) is specified on the non-owning side of a relation |
+| `E0215` | A relation name is used by more than two models |
+| `E0216` | A relation name appears more than once on the same model |
+| `E0217` | An explicit many-to-many relation has `fields:` — M2M relations must not declare `fields:` |
+| `E0226` | An implicit many-to-many relation is missing a `@relation("Name")` disambiguator |
+| `E0227` | An optional many-to-many field (`Model[]?`) is not valid; lists are always non-null |
+| `E0228` | Unknown value for `onDelete` or `onUpdate` — valid values are `Cascade`, `Restrict`, `SetNull`, `SetDefault`, `NoAction` |
+| `E0231` | A relation cycle was detected where every `onDelete` action is `Cascade`, which would cause unbounded deletes |
+
+### Other Field Constraints
+
+| Code | Description |
+|------|-------------|
+| `E0218` | `@unique` on a list field — uniqueness on list fields is not supported |
+| `E0219` | `@updatedAt` on a non-`DateTime` field |
+| `E0224` | `@@unique([…])` references a field that does not exist on the model |
+| `E0225` | `@@index([…])` references a field that does not exist on the model |
+| `E0230` | A scalar list field is marked nullable (`Type[]?`) — not valid |
+
+---
+
+## Warnings
+
+Warnings do not prevent code generation but indicate patterns you should address.
+
+<Accordion title="W0001 — DANGLING_DOC_COMMENT">
+
+**Cause:** A `///` doc comment appears in the schema but is not immediately followed by a model, field, or enum declaration.
+
+```volan
+/// This comment is attached to nothing
+// (blank line or end of file here)
+```
+
+**Fix:** Either attach the doc comment directly to a declaration or convert it to a regular `//` comment.
+
+</Accordion>
+
+<Accordion title="W0002 — Inline database URL">
+
+**Cause:** A literal database URL (containing credentials) is written directly in the schema file, which may be committed to source control.
+
+```volan
+// ⚠️
+datasource db {
+  url = "postgresql://admin:secret@localhost/prod"
+}
+```
+
+**Fix:** Move the URL to an environment variable and reference it with `env()`.
+
+```volan
+// ✅
+datasource db {
+  url = env("DATABASE_URL")
+}
+```
+
+</Accordion>
+
+<Accordion title="W0003 — Cascade cycle warning">
+
+**Cause:** An `onDelete: Cascade` chain forms a loop in the schema. This is allowed (unlike `E0231`, where *all* actions are Cascade) but may produce unexpected behaviour at runtime.
+
+**Fix:** Review your referential actions and consider using `Restrict` or `SetNull` to break the cycle.
+
+</Accordion>

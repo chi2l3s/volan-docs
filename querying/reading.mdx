@@ -1,0 +1,193 @@
+---
+title: "Reading Data with Volan's Query API"
+sidebarTitle: "Reading"
+description: "Learn how to fetch single records, lists, counts, and existence checks using Volan's generated repository methods."
+---
+
+Every model in your Volan schema gets a fully-typed repository attached to the `db` client. These repositories expose a consistent set of read methods — `findMany`, `findFirst`, `findFirstOrThrow`, `findUnique`, `findUniqueOrThrow`, `count`, and `exists` — so you can retrieve records without writing a single line of SQL.
+
+## findMany
+
+Use `findMany` when you need a list of records that match a set of criteria. It always returns a `List<T>` (never `null`); if no rows match, you get an empty list.
+
+<CodeGroup>
+```kotlin Kotlin
+val users = db.user.findMany {
+    where { email endsWith "@acme.com" }
+    orderBy { createdAt.desc() }
+    take = 20
+    skip = 0
+}
+```
+
+```java Java
+List<User> users = db.user().findMany(q -> q
+    .where(w -> w.email().endsWith("@acme.com"))
+    .orderBy(User_.CREATED_AT.desc())
+    .take(20)
+);
+```
+</CodeGroup>
+
+The lambda passed to `findMany` is optional — calling `db.user.findMany {}` with no clauses returns every row in the table.
+
+## findFirst
+
+`findFirst` returns the first record that matches the filter, or `null` if none is found. It is ideal when you expect zero or one results but do not want to throw on absence.
+
+<CodeGroup>
+```kotlin Kotlin
+val user = db.user.findFirst {
+    where { email eq "alice@acme.com" }
+}
+
+if (user != null) {
+    println(user.name)
+}
+```
+
+```java Java
+User user = db.user().findFirst(q -> q
+    .where(w -> w.email().eq("alice@acme.com"))
+);
+
+if (user != null) {
+    System.out.println(user.getName());
+}
+```
+</CodeGroup>
+
+<Tip>
+  If the absence of a record is an exceptional state in your business logic, prefer `findFirstOrThrow` so the error surfaces immediately rather than as a `NullPointerException` later in the call stack.
+</Tip>
+
+## findFirstOrThrow
+
+`findFirstOrThrow` behaves identically to `findFirst` but throws `VolanNotFoundException` instead of returning `null` when no record matches. The return type is non-nullable, so you can use the result directly.
+
+<CodeGroup>
+```kotlin Kotlin
+val user = db.user.findFirstOrThrow {
+    where { email eq "alice@acme.com" }
+}
+// user is User, never null
+println(user.name)
+```
+
+```java Java
+User user = db.user().findFirstOrThrow(q -> q
+    .where(w -> w.email().eq("alice@acme.com"))
+);
+System.out.println(user.getName());
+```
+</CodeGroup>
+
+<Warning>
+  `VolanNotFoundException` is an unchecked exception. Catch it at the boundary where you want to convert it into a user-facing error (e.g. an HTTP 404 response).
+</Warning>
+
+## findUnique and findUniqueOrThrow
+
+Use `findUnique` when you are filtering on a field annotated with `@id` or `@unique`. Volan verifies at query time that exactly one row can match the constraint. If you pass a non-unique field, Volan throws `VolanNonUniqueFieldException` to catch the mistake early.
+
+- `findUnique` returns `T?` (nullable).
+- `findUniqueOrThrow` returns `T` (non-nullable) and throws `VolanNotFoundException` when the record is absent.
+
+<CodeGroup>
+```kotlin Kotlin
+// Filter by @unique field
+val byEmail = db.user.findUnique {
+    where { email eq "alice@acme.com" }
+}
+
+// Filter by @id field — throws if not found
+val byId = db.user.findUniqueOrThrow {
+    where { id eq 42 }
+}
+```
+
+```java Java
+User byEmail = db.user().findUnique(q -> q
+    .where(w -> w.email().eq("alice@acme.com"))
+);
+
+User byId = db.user().findUniqueOrThrow(q -> q
+    .where(w -> w.id().eq(42))
+);
+```
+</CodeGroup>
+
+<Note>
+  Prefer `findUnique` over `findFirst` whenever you are looking up by a unique constraint. Volan can generate a more efficient query (a single-row lookup) and will surface schema-design mistakes if you accidentally pass a non-unique field.
+</Note>
+
+## count
+
+`count` returns a `Long` representing the number of rows that satisfy the filter. Omit the `where` clause to count all rows in the table.
+
+<CodeGroup>
+```kotlin Kotlin
+val adminCount = db.user.count {
+    where { role eq Role.ADMIN }
+}
+
+val totalUsers = db.user.count {}
+```
+
+```java Java
+long adminCount = db.user().count(q -> q
+    .where(w -> w.role().eq(Role.ADMIN))
+);
+```
+</CodeGroup>
+
+## exists
+
+`exists` returns a `Boolean` indicating whether at least one row matches the filter. Under the hood Volan issues a `SELECT 1 ... LIMIT 1` query, making it more efficient than `count() > 0` when you only care about presence.
+
+<CodeGroup>
+```kotlin Kotlin
+val taken = db.user.exists {
+    where { email eq "alice@acme.com" }
+}
+
+if (taken) {
+    throw EmailAlreadyRegisteredException()
+}
+```
+
+```java Java
+boolean taken = db.user().exists(q -> q
+    .where(w -> w.email().eq("alice@acme.com"))
+);
+```
+</CodeGroup>
+
+## Method reference
+
+| Method | Return type | Throws when absent |
+|---|---|---|
+| `findMany` | `List<T>` | — |
+| `findFirst` | `T?` | — |
+| `findFirstOrThrow` | `T` | `VolanNotFoundException` |
+| `findUnique` | `T?` | — |
+| `findUniqueOrThrow` | `T` | `VolanNotFoundException` |
+| `count` | `Long` | — |
+| `exists` | `Boolean` | — |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Filtering" icon="filter" href="/querying/filtering">
+    Apply precise conditions to your queries using Volan's full operator set.
+  </Card>
+  <Card title="Ordering & Pagination" icon="arrow-down-wide-short" href="/querying/ordering-pagination">
+    Sort results and paginate with offset or cursor strategies.
+  </Card>
+  <Card title="Relations" icon="diagram-project" href="/querying/relations">
+    Load related models in a single batched round-trip.
+  </Card>
+  <Card title="Aggregation" icon="sigma" href="/querying/aggregation">
+    Compute counts, sums, averages, and group-by results.
+  </Card>
+</CardGroup>

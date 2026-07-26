@@ -1,0 +1,188 @@
+---
+title: "Nested Writes: Create and Connect Relations in Volan"
+sidebarTitle: "Nested Writes"
+description: "Learn how to create, connect, and connectOrCreate related records in a single atomic operation using Volan's nested write API."
+---
+
+Nested writes let you create or link related records as part of a single `create` call, without manually wiring up foreign keys or writing multiple queries. Volan wraps all nested operations in one transaction, so either everything succeeds or nothing does.
+
+<Note>
+  Nested writes are only available inside `create {}`. The `createMany` operation does **not** support them — attempting a nested write inside a `row {}` block throws `VolanValidationException`.
+</Note>
+
+## The three nested write operations
+
+There are three ways to handle a related record inside a `create`:
+
+| Operation | Behaviour |
+|---|---|
+| `create {}` | Inserts a new related record and links it to the parent. |
+| `connect {}` | Links an already-existing record to the parent by a unique filter. |
+| `connectOrCreate {}` | Connects an existing record if found, otherwise creates a new one. |
+
+---
+
+## `create` — insert a related record
+
+Use the nested `create {}` block on a relation field to insert a new child record at the same time as the parent.
+
+### One-to-one relation
+
+```kotlin
+val user = db.user.create {
+    data {
+        email = "alice@acme.com"
+        name  = "Alice"
+        profile {
+            create {
+                bio = "Software engineer"
+            }
+        }
+    }
+}
+// `user.profile` is populated with the newly created Profile
+```
+
+### One-to-many relation
+
+```kotlin
+val user = db.user.create {
+    data {
+        email = "alice@acme.com"
+        name  = "Alice"
+        posts {
+            create {
+                title = "Hello World"
+                body  = "My first post"
+            }
+        }
+    }
+}
+// The new Post is linked to `user` via the foreign key automatically
+```
+
+You can chain multiple `create {}` blocks to insert several related records at once:
+
+```kotlin
+val user = db.user.create {
+    data {
+        email = "alice@acme.com"
+        name  = "Alice"
+        posts {
+            create { title = "Post One";   body = "..." }
+            create { title = "Post Two";   body = "..." }
+            create { title = "Post Three"; body = "..." }
+        }
+    }
+}
+```
+
+---
+
+## `connect` — link an existing record
+
+Use `connect {}` when the related record already exists and you just want to establish the relationship. The filter inside `connect {}` must resolve to a unique row.
+
+```kotlin
+val post = db.post.create {
+    data {
+        title  = "Using Volan"
+        author {
+            connect { id eq 42 }   // link to the existing User whose id is 42
+        }
+    }
+}
+```
+
+<Tip>
+  `connect {}` only sets the foreign-key column on the new record — it does not modify the related record itself. If you need to update the related record at the same time, do so in a separate `update` call inside a [transaction](/writing/transactions).
+</Tip>
+
+---
+
+## `connectOrCreate` — connect if exists, create if not
+
+`connectOrCreate {}` combines a lookup with a fallback insert. You provide a `where {}` filter to search for the related record and a `create {}` block to use if it isn't found.
+
+This is especially useful for **many-to-many** relations where the related record (such as a tag) may or may not already exist.
+
+```kotlin
+val post = db.post.create {
+    data {
+        title  = "Tagged Post"
+        author { connect { id eq 1 } }
+        tags {
+            connectOrCreate {
+                where  { name eq "kotlin" }
+                create { name = "kotlin"  }
+            }
+            connectOrCreate {
+                where  { name eq "orm" }
+                create { name = "orm"  }
+            }
+        }
+    }
+}
+```
+
+In this example, if a `Tag` with `name = "kotlin"` already exists it is linked to the post; if not, Volan creates it first and then links it. Both operations happen inside the same transaction as the outer `create`.
+
+---
+
+## Combining nested operations
+
+You can mix `create`, `connect`, and `connectOrCreate` on different relation fields within a single `create` call:
+
+```kotlin
+val post = db.post.create {
+    data {
+        title  = "Comprehensive Post"
+
+        // Connect to an existing author
+        author { connect { id eq 1 } }
+
+        // Create a new Category inline
+        category {
+            create { name = "Engineering" }
+        }
+
+        // connectOrCreate multiple tags
+        tags {
+            connectOrCreate {
+                where  { name eq "volan" }
+                create { name = "volan"  }
+            }
+            connectOrCreate {
+                where  { name eq "kotlin" }
+                create { name = "kotlin"  }
+            }
+        }
+    }
+}
+```
+
+---
+
+## Atomicity
+
+All operations in a nested write — the top-level record and every nested `create`, `connect`, or `connectOrCreate` — execute inside a single database transaction. If any part fails (for example, a `connect {}` filter matches no row), the entire operation is rolled back and no partial data is persisted.
+
+<Note>
+  You do not need to wrap a nested write in an explicit `db.transaction {}` block to get this guarantee — Volan handles the transaction automatically. If you want to combine a nested write with other operations under the same transaction boundary, you can still nest it inside a manual `db.transaction {}`.
+</Note>
+
+---
+
+## Relation types at a glance
+
+<CardGroup cols={3}>
+  <Card title="One-to-one" icon="link">
+    Use a single `create {}` or `connect {}` block on the relation field. No list syntax needed.
+  </Card>
+  <Card title="One-to-many" icon="list">
+    Use one or more `create {}` / `connect {}` / `connectOrCreate {}` blocks inside the relation field. Volan injects the foreign key for each child.
+  </Card>
+  <Card title="Many-to-many" icon="arrow-right-arrow-left">
+    Use `connectOrCreate {}` (or `connect {}`) to manage the join table entries. Volan creates the join-table rows automatically.
+  </Card>
+</CardGroup>

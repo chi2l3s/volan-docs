@@ -1,47 +1,275 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Volan in Your JVM Project"
+sidebarTitle: "Quickstart"
+description: "Add Volan to a Gradle project, write a schema, run the code generator, and execute your first type-safe query against PostgreSQL in minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+This guide walks you through adding Volan to an existing Gradle project, writing a minimal schema, generating a client, and running your first query. It assumes you are using Gradle with the Kotlin DSL (`build.gradle.kts`) and that you have a PostgreSQL database available. You will need JDK 17 or newer.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+<Note>
+  Volan is pre-1.0 and not yet published to Maven Central. Follow the [Installation](/installation) page to build from source and install to your local Maven repository before continuing.
+</Note>
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
 
-    ```bash
-    npm install your-package
+  <Step title="Add dependencies to your Gradle project">
+    Import the Volan BOM so that all modules share a single version, then add the runtime and the PostgreSQL dialect. The code generator is a build-time dependency only.
+
+    ```kotlin build.gradle.kts
+    repositories {
+        mavenLocal() // Volan is installed locally until Maven Central publication
+        mavenCentral()
+    }
+
+    dependencies {
+        // Import the BOM to align all Volan module versions
+        implementation(platform("io.github.thirtyeighttwentysix:volan-bom:0.1.0-SNAPSHOT"))
+
+        // Runtime: query execution, JDBC, connection pooling, transactions
+        implementation("io.github.thirtyeighttwentysix:volan-runtime")
+
+        // PostgreSQL dialect — auto-discovered via ServiceLoader at runtime
+        runtimeOnly("io.github.thirtyeighttwentysix:volan-dialect-postgres")
+
+        // Code generator — used only at build time
+        implementation("io.github.thirtyeighttwentysix:volan-codegen")
+    }
+    ```
+
+    <Tip>
+      Because Volan uses the BOM, you never specify a version on individual `volan-*` artifacts. Adding or removing a module later requires only a single line change.
+    </Tip>
+  </Step>
+
+  <Step title="Register the code generator task">
+    Add a task to your build script that invokes `VolanGenerator`. Point it at your schema file and choose an output directory that sits on the compile source set.
+
+    ```kotlin build.gradle.kts
+    import io.github.thirtyeighttwentysix.volan.codegen.VolanGenerator
+    import io.github.thirtyeighttwentysix.volan.ir.SchemaLoader
+    import io.github.thirtyeighttwentysix.volan.schema.SourceFile
+
+    val generateVolanClient by tasks.registering {
+        group = "volan"
+        description = "Generates the Volan client from schema.volan."
+
+        val schemaFile = layout.projectDirectory.file("schema.volan")
+        val outputDir  = layout.buildDirectory.dir("generated/volan")
+
+        inputs.file(schemaFile)
+        outputs.dir(outputDir)
+
+        doLast {
+            val source = schemaFile.asFile.readText()
+            val result = SchemaLoader.load(SourceFile("schema.volan", source))
+            if (result.hasErrors) error(result.render())
+            outputDir.get().asFile.deleteRecursively()
+            VolanGenerator.writeTo(result.schemaOrThrow(), outputDir.get().asFile.toPath())
+        }
+    }
+
+    // Make the main compile task depend on generation
+    tasks.compileKotlin { dependsOn(generateVolanClient) }   // Kotlin
+    tasks.compileJava   { dependsOn(generateVolanClient) }   // Java
+
+    // Add the generated sources to the main source set
+    kotlin.sourceSets["main"].kotlin.srcDir(
+        layout.buildDirectory.dir("generated/volan")
+    )
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Write a schema.volan file">
+    Create `schema.volan` at the root of your project. The file declares your datasource, a generator block (which controls the output package and language target), and your models.
+
+    ```prisma schema.volan
+    datasource db {
+      provider = "postgresql"
+      url      = env("DATABASE_URL")
+    }
+
+    generator client {
+      provider     = "volan-kotlin"
+      package      = "com.example.blog"
+      output       = "build/generated/volan"
+      javaFriendly = true
+    }
+
+    model Post {
+      id       Int     @id @default(autoincrement())
+      title    String
+      body     String?
+      draft    Boolean @default(true)
+
+      @@map("posts")
+    }
+    ```
+
+    The `package` field controls the package name of the generated sources and also determines the name of the generated client class. A package of `com.example.blog` produces a class called `BlogClient`.
+
+    <Tip>
+      Setting `javaFriendly = true` generates additional Java-compatible accessor methods and companion objects, so the same client works idiomatically from both Kotlin and Java.
+    </Tip>
+  </Step>
+
+  <Step title="Run the code generator">
+    Run the generation task. Volan validates your schema, reports any errors with a code frame and a suggested fix, and then writes the generated sources into `build/generated/volan`.
 
     ```bash
-    your-cli init
+    ./gradlew generateVolanClient
     ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
+    A successful run prints a line for each file it writes:
+
     ```
+    generated build/generated/volan/com/example/blog/BlogClient.kt
+    generated build/generated/volan/com/example/blog/Post.kt
+    generated build/generated/volan/com/example/blog/PostFields.kt
+    ```
+
+    The main compile task also triggers generation automatically because of the `dependsOn` wiring you added in step 2.
   </Step>
+
+  <Step title="Connect with the generated client">
+    Instantiate your client using the builder. Pass the JDBC URL, credentials, and an optional pool size. The client holds the connection pool for the lifetime of your application — create one instance and reuse it.
+
+    <CodeGroup>
+      ```kotlin Kotlin
+      import com.example.blog.BlogClient
+
+      val db = BlogClient.builder()
+          .url("jdbc:postgresql://localhost:5432/mydb")
+          .username("myuser")
+          .password("secret")
+          .maxPoolSize(10)
+          .build()
+      ```
+
+      ```java Java
+      import com.example.blog.BlogClient;
+
+      BlogClient db = BlogClient.builder()
+              .url("jdbc:postgresql://localhost:5432/mydb")
+              .username("myuser")
+              .password("secret")
+              .maxPoolSize(10)
+              .build();
+      ```
+    </CodeGroup>
+
+    Close the client when your application shuts down to release the connection pool:
+
+    <CodeGroup>
+      ```kotlin Kotlin
+      db.close()
+      ```
+
+      ```java Java
+      db.close();
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Run your first query">
+    Use `findMany` to fetch all rows, or add a `where` block to filter. Every field name in the DSL is generated from your schema — the compiler will catch typos immediately.
+
+    <CodeGroup>
+      ```kotlin Kotlin
+      // Fetch all posts
+      val posts = db.post.findMany()
+
+      // Filter, order, and page
+      val drafts = db.post.findMany {
+          where { draft eq true }
+          orderBy { title.asc() }
+          take = 10
+      }
+
+      // Find a single post by primary key — throws VolanNotFoundException if absent
+      val post = db.post.findUnique {
+          where { id eq 1 }
+      }
+
+      // Count matching rows
+      val total = db.post.count { where { draft eq false } }
+      ```
+
+      ```java Java
+      import java.util.List;
+      import com.example.blog.Post;
+
+      // Fetch all posts
+      List<Post> posts = db.post().findMany();
+
+      // Filter, order, and page
+      List<Post> drafts = db.post().findMany(q -> q
+              .where(w -> w.draft().eq(true))
+              .orderBy(Post_.TITLE.asc())
+              .take(10));
+
+      // Find a single post by primary key — throws VolanNotFoundException if absent
+      Post post = db.post().findUnique(q -> q
+              .where(w -> w.id().eq(1)));
+
+      // Count matching rows
+      long total = db.post().count(q -> q.where(w -> w.draft().eq(false)));
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Write and delete data">
+    The same generated client handles all writes. `create` inserts a row and returns it fully populated, `update` mutates a matching row, and `delete` removes it and hands back what was there.
+
+    <CodeGroup>
+      ```kotlin Kotlin
+      // Create a new post
+      val created = db.post.create {
+          title = "Hello, Volan"
+          body  = "A schema-first ORM for the JVM."
+          draft = false
+      }
+
+      // Update a field
+      val updated = db.post.update {
+          where { id eq created.id }
+          data  { title = "Hello, Volan (edited)" }
+      }
+
+      // Delete and get the removed row back
+      val removed = db.post.delete {
+          where { id eq updated.id }
+      }
+      ```
+
+      ```java Java
+      // Create a new post
+      Post created = db.post().create(p -> {
+          p.title("Hello, Volan");
+          p.body("A schema-first ORM for the JVM.");
+          p.draft(false);
+      });
+
+      // Update a field
+      Post updated = db.post().update(q -> q
+              .where(w -> w.id().eq(created.getId()))
+              .data(d -> d.title("Hello, Volan (edited)")));
+
+      // Delete and get the removed row back
+      Post removed = db.post().delete(q -> q
+              .where(w -> w.id().eq(updated.getId())));
+      ```
+    </CodeGroup>
+  </Step>
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Next steps
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Installation" icon="box" href="/installation">
+    Full module list, BOM usage, and all Gradle configuration options.
+  </Card>
+  <Card title="Schema language" icon="file-code" href="https://github.com/thirtyeighttwentysix/volan/blob/main/docs/schema-language.md">
+    Complete reference for `schema.volan` syntax, types, relations, and attributes.
+  </Card>
+</CardGroup>

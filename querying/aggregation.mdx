@@ -1,0 +1,229 @@
+---
+title: "Aggregation and Group By in Volan"
+sidebarTitle: "Aggregation"
+description: "Compute counts, sums, averages, and extremes over your data with aggregate {}, and break results into groups with Volan's type-safe groupBy {} API."
+---
+
+When you need computed statistics rather than individual rows, Volan provides two dedicated query methods: `aggregate { }` for whole-table or filtered aggregations, and `groupBy { }` for bucketing rows by one or more field values before aggregating. Both methods are type-safe — result properties are generated from your schema, so there is no stringly-typed column access.
+
+## `aggregate { }`
+
+The `aggregate { }` method computes one or more aggregate functions over the matching rows and returns a single result object. You opt into each function individually; Volan only requests the computations you ask for.
+
+```kotlin
+val result = db.post.aggregate {
+    where { draft eq false }
+    count()
+    sum { views }
+    average { views }
+    minimum { createdAt }
+    maximum { views }
+}
+```
+
+### Result properties
+
+| Function called | Result property | Return type |
+|---|---|---|
+| `count()` | `result.count` | `Long` |
+| `sum { views }` | `result.sumOfViews` | `BigDecimal?` |
+| `average { views }` | `result.averageOfViews` | `Double?` |
+| `minimum { createdAt }` | `result.minimumOfCreatedAt` | `Instant?` |
+| `maximum { views }` | `result.maximumOfViews` | `BigDecimal?` |
+
+Properties for numeric fields (`sum`, `average`, `maximum`) return `BigDecimal?` or `Double?` because the result is `NULL` in SQL when there are no matching rows. Temporal fields follow the same nullable convention. `count` always returns a non-nullable `Long` (returning `0` when no rows match).
+
+<Warning>
+  Accessing a result property for a function you did not request throws `VolanAggregateNotAskedException`. For example, reading `result.sumOfViews` when you only called `count()` will fail at runtime. Always call every aggregate function whose result property you intend to read.
+</Warning>
+
+### Examples
+
+```kotlin
+// Total published posts and average view count
+val stats = db.post.aggregate {
+    where { draft eq false }
+    count()
+    average { views }
+}
+
+println("Published posts: ${stats.count}")
+println("Average views: ${stats.averageOfViews ?: 0.0}")
+```
+
+```kotlin
+// Date range of all content
+val range = db.post.aggregate {
+    minimum { createdAt }
+    maximum { createdAt }
+}
+
+println("First post: ${range.minimumOfCreatedAt}")
+println("Latest post: ${range.maximumOfCreatedAt}")
+```
+
+<CodeGroup>
+```kotlin Kotlin
+val result = db.post.aggregate {
+    where { draft eq false }
+    count()
+    sum { views }
+    average { views }
+}
+```
+
+```java Java
+PostAggregateResult result = db.post().aggregate(q -> q
+    .where(w -> w.draft().eq(false))
+    .count()
+    .sum(f -> f.views())
+    .average(f -> f.views())
+);
+```
+</CodeGroup>
+
+## `groupBy { }`
+
+`groupBy { }` partitions rows by one or more fields and computes aggregate functions within each partition. It is the equivalent of SQL's `GROUP BY … HAVING …` and returns a list of group result objects.
+
+```kotlin
+val groups = db.post.groupBy {
+    by { authorId }
+    count()
+    sum { views }
+    having { count gt 5 }
+    orderBy { count.desc() }
+    take = 10
+}
+```
+
+### `by { }` — the grouping key
+
+List the fields you want to group on inside `by { }`. You can specify multiple fields for a composite group key.
+
+```kotlin
+db.post.groupBy {
+    by { authorId; categoryId }
+    count()
+}
+```
+
+### Aggregate functions
+
+The same functions available in `aggregate { }` are available inside `groupBy { }`: `count()`, `sum { }`, `average { }`, `minimum { }`, `maximum { }`.
+
+### `having { }` — filtering groups
+
+`having { }` filters the group results after aggregation. The operators available here are the same ordered-field operators (`gt`, `gte`, `lt`, `lte`, `eq`, `between`, etc.) applied to computed aggregate values.
+
+```kotlin
+db.post.groupBy {
+    by { authorId }
+    count()
+    sum { views }
+    having { count gt 5 }          // only authors with more than 5 posts
+}
+```
+
+You can combine multiple conditions in `having`:
+
+```kotlin
+having {
+    count gte 3
+    sumOfViews gt 10000
+}
+```
+
+### Ordering and limiting groups
+
+Use `orderBy { }` and `take` / `skip` on group results, exactly as you would on `findMany`:
+
+```kotlin
+db.post.groupBy {
+    by { authorId }
+    count()
+    sum { views }
+    orderBy {
+        sumOfViews.desc()
+        count.desc()
+    }
+    take = 20
+}
+```
+
+### Accessing group results
+
+```kotlin
+val groups = db.post.groupBy {
+    by { authorId }
+    count()
+    sum { views }
+}
+
+groups[0].authorId    // Int  — the grouped-by field value
+groups[0].count       // Long
+groups[0].sumOfViews  // BigDecimal?
+```
+
+<Warning>
+  Accessing a field that was not listed in `by { }` on a group result object throws at runtime. For example, if you grouped only by `authorId`, reading `groups[0].categoryId` will fail. Stick to the fields you declared in `by { }` and the aggregate properties you requested.
+</Warning>
+
+### Full example
+
+```kotlin
+// Top 10 authors by total views, among those with more than 5 published posts
+val topAuthors = db.post.groupBy {
+    by { authorId }
+    count()
+    sum { views }
+    average { views }
+    having { count gt 5 }
+    orderBy { sumOfViews.desc() }
+    take = 10
+}
+
+topAuthors.forEach { group ->
+    println(
+        "Author ${group.authorId}: " +
+        "${group.count} posts, " +
+        "${group.sumOfViews} total views, " +
+        "${group.averageOfViews?.let { "%.1f".format(it) }} avg"
+    )
+}
+```
+
+<CodeGroup>
+```kotlin Kotlin
+val groups = db.post.groupBy {
+    by { authorId }
+    count()
+    sum { views }
+    having { count gt 5 }
+    orderBy { count.desc() }
+    take = 10
+}
+```
+
+```java Java
+List<PostGroupResult> groups = db.post().groupBy(q -> q
+    .by(b -> b.authorId())
+    .count()
+    .sum(f -> f.views())
+    .having(h -> h.count().gt(5))
+    .orderBy(PostGroupResult_.COUNT.desc())
+    .take(10)
+);
+```
+</CodeGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Filtering" icon="filter" href="/querying/filtering">
+    Apply where-clause filters before your aggregations run.
+  </Card>
+  <Card title="Raw SQL" icon="code" href="/querying/raw-sql">
+    Drop down to raw SQL for aggregations that go beyond what the builder supports.
+  </Card>
+</CardGroup>

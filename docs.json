@@ -1,72 +1,82 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Volan",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#6C47FF",
+    "light": "#EDE9FF",
+    "dark": "#3A1FA8"
   },
   "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/thirtyeighttwentysix/volan"
+    }
+  },
   "navigation": {
-    "pages": [
+    "tabs": [
       {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Schema",
+            "pages": [
+              "schema/overview",
+              "schema/models",
+              "schema/fields",
+              "schema/relations",
+              "schema/attributes",
+              "schema/enums"
+            ]
+          },
+          {
+            "group": "Querying",
+            "pages": [
+              "querying/reading",
+              "querying/filtering",
+              "querying/ordering-pagination",
+              "querying/relations",
+              "querying/aggregation",
+              "querying/raw-sql"
+            ]
+          },
+          {
+            "group": "Writing",
+            "pages": [
+              "writing/create",
+              "writing/update",
+              "writing/delete",
+              "writing/nested-writes",
+              "writing/transactions"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/datasource",
+              "configuration/codegen",
+              "configuration/dialects"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/error-codes",
+              "reference/exceptions",
+              "reference/comparison"
+            ]
+          }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
     ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
   }
 }
