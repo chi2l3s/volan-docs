@@ -1,0 +1,184 @@
+---
+title: "Установка Volan: модули, BOM и настройка сборки Gradle"
+sidebarTitle: "Установка"
+description: "Полный справочник по модулям Volan: использование BOM, требования к JDK, конфигурация Gradle и подключение генератора кода к сборке."
+---
+
+Volan разделён на узкоспециализированные модули, чтобы вы могли подключать только то, что нужно вашему проекту. Артефакт bill-of-materials (`volan-bom`) фиксирует все модули на одной согласованной версии, так что вам никогда не придётся управлять номерами версий по отдельности. На этой странице описаны все доступные модули, настройка BOM в Gradle и подключение генератора кода к сборке.
+
+<Warning>
+  Volan `0.1.0-SNAPSHOT` находится в стадии до 1.0 и **пока не опубликован в Maven Central**. Перед добавлением в проект его нужно собрать из исходного кода и установить в локальный репозиторий Maven. См. раздел [Сборка из исходного кода](#building-from-source) ниже.
+</Warning>
+
+## Требования
+
+- **JDK 17 или новее.** Volan использует sealed-интерфейсы и records из свежих версий Java. JDK 17 — минимум; для продакшена рекомендуется JDK 21.
+- **Gradle 8\+** с Kotlin DSL — предполагается на всей этой странице, хотя сборка через Maven работает не хуже.
+
+## Доступные модули
+
+<CardGroup cols={2}>
+  <Card title="volan-runtime" icon="server">
+    Выполнение запросов, пул JDBC-соединений, управление транзакциями и базовые типы, общие для всех сгенерированных клиентов. Добавляйте как зависимость `implementation` в каждый проект, использующий сгенерированный клиент.
+  </Card>
+
+  <Card title="volan-codegen" icon="code">
+    Генератор кода, который читает файл `schema.volan` и пишет исходники на Kotlin (с учётом совместимости с Java). Это зависимость **только на этапе сборки** — не включайте её в runtime-classpath.
+  </Card>
+
+  <Card title="volan-dialect-postgres" icon="database">
+    Диалект PostgreSQL. Реализует генерацию SQL, маппинг типов и перевод ошибок ограничений для PostgreSQL. Обнаруживается автоматически в рантайме через `ServiceLoader` — добавляйте как `runtimeOnly`.
+  </Card>
+
+  <Card title="volan-bom" icon="list-check">
+    Bill of materials. Подключайте как зависимость `platform`, чтобы выровнять версии всех модулей `volan-*` без указания версий по отдельности.
+  </Card>
+</CardGroup>
+
+Перечисленные ниже модули описаны в BOM и зарезервированы для будущих этапов. Они пока не работают, но доступны как заглушки:
+
+| Модуль | Назначение | Статус |
+| --- | --- | --- |
+| `volan-dialect-mysql` | Диалект MySQL и MariaDB | Скоро |
+| `volan-dialect-sqlite` | Диалект SQLite | Скоро |
+| `volan-dialect-h2` | Диалект H2 in-memory (удобен для тестов) | Скоро |
+| `volan-coroutines` | Обёртки на корутинах Kotlin для всех операций клиента | Скоро |
+| `volan-migrate` | Движок декларативных миграций схемы | Скоро |
+
+## Сборка из исходного кода
+
+Поскольку Volan пока нет в Maven Central, сначала установите его в локальный репозиторий Maven:
+
+```bash
+git clone https://github.com/thirtyeighttwentysix/volan.git
+cd volan
+./gradlew publishToMavenLocal
+```
+
+Это опубликует все модули под группой `io.github.thirtyeighttwentysix` версии `0.1.0-SNAPSHOT` в `~/.m2/repository`. Повторять команду нужно только после того, как вы подтянете новые изменения из репозитория.
+
+## Подключение BOM
+
+Добавьте `mavenLocal()` в блок репозиториев, подключите BOM как зависимость `platform`, а затем перечислите нужные модули без указания версий.
+
+```kotlin build.gradle.kts
+repositories {
+    mavenLocal() // обязательно до публикации в Maven Central
+    mavenCentral()
+}
+
+dependencies {
+    // Фиксируем все модули volan-* на одной версии
+    implementation(platform("io.github.thirtyeighttwentysix:volan-bom:0.1.0-SNAPSHOT"))
+
+    // Рантайм — нужен в любом приложении со сгенерированным клиентом
+    implementation("io.github.thirtyeighttwentysix:volan-runtime")
+
+    // Диалект PostgreSQL — обнаруживается в рантайме, смена диалекта не требует правки кода
+    runtimeOnly("io.github.thirtyeighttwentysix:volan-dialect-postgres")
+
+    // Генератор кода — только на этапе сборки, исключён из runtime-classpath
+    implementation("io.github.thirtyeighttwentysix:volan-codegen")
+}
+```
+
+<Tip>
+  BOM покрывает все модули, включая будущие (`volan-dialect-mysql`, `volan-coroutines` и т. д.). Когда эти модули выйдут, их можно будет добавить, не трогая строку с версией BOM.
+</Tip>
+
+## Подключение генератора кода
+
+Генератор читает ваш файл `schema.volan` и создаёт исходники Kotlin в каталоге сборки. Зарегистрируйте Gradle-задачу, которая его запускает, свяжите с ней задачи компиляции и зарегистрируйте выходной каталог как корень исходников.
+
+```kotlin build.gradle.kts
+import io.github.thirtyeighttwentysix.volan.codegen.VolanGenerator
+import io.github.thirtyeighttwentysix.volan.ir.SchemaLoader
+import io.github.thirtyeighttwentysix.volan.schema.SourceFile
+
+val generateVolanClient by tasks.registering {
+    group       = "volan"
+    description = "Generates the Volan client from schema.volan."
+
+    val schemaFile = layout.projectDirectory.file("schema.volan")
+    val outputDir  = layout.buildDirectory.dir("generated/volan")
+
+    inputs.file(schemaFile)
+    outputs.dir(outputDir)
+
+    doLast {
+        val source = schemaFile.asFile.readText()
+        val result = SchemaLoader.load(SourceFile("schema.volan", source))
+        if (result.hasErrors) error(result.render())
+
+        // Удаляем устаревшие сгенерированные файлы перед записью новых
+        outputDir.get().asFile.deleteRecursively()
+        val written = VolanGenerator.writeTo(result.schemaOrThrow(), outputDir.get().asFile.toPath())
+        written.forEach { println("generated $it") }
+    }
+}
+
+// Задачи компиляции должны дождаться завершения генерации
+tasks.compileKotlin { dependsOn(generateVolanClient) }
+tasks.compileJava   { dependsOn(generateVolanClient) }
+
+// Регистрируем выходной каталог как корень исходников Kotlin
+kotlin.sourceSets["main"].kotlin.srcDir(
+    layout.buildDirectory.dir("generated/volan")
+)
+```
+
+<Note>
+  Вызов `outputDir.get().asFile.deleteRecursively()` перед записью сделан намеренно. Он гарантирует, что модели, удалённые из `schema.volan`, исчезнут из сгенерированных исходников, а не останутся файлами, которые всё ещё компилируются. Volan всегда перегенерирует все файлы с нуля.
+</Note>
+
+### Проверка настройки
+
+Запустите генератор напрямую, чтобы убедиться, что схема корректна, а результат записан:
+
+```bash
+./gradlew generateVolanClient
+```
+
+При успешном выполнении выводится строка на каждый записанный файл:
+
+```text
+generated build/generated/volan/com/example/blog/BlogClient.kt
+generated build/generated/volan/com/example/blog/Post.kt
+generated build/generated/volan/com/example/blog/PostFields.kt
+```
+
+Ошибки схемы выводятся с фрагментом кода и указателем, например:
+
+```text
+error: unknown type 'Strig' at schema.volan:12:10
+  12 |   title    Strig
+                  ^^^^^
+  Did you mean 'String'?
+```
+
+## Справочник по конфигурациям зависимостей
+
+В таблице ниже указана правильная конфигурация Gradle для каждого модуля.
+
+| Модуль | Конфигурация Gradle | Примечания |
+| --- | --- | --- |
+| `volan-bom` | `platform(...)` внутри `implementation` | Только выравнивание версий; кода в classpath нет |
+| `volan-runtime` | `implementation` | Нужен и в рантайме, и при компиляции |
+| `volan-dialect-postgres` | `runtimeOnly` | Обнаруживается через `ServiceLoader`; импорты не нужны |
+| `volan-dialect-mysql` | `runtimeOnly` | Ещё не выпущен |
+| `volan-dialect-sqlite` | `runtimeOnly` | Ещё не выпущен |
+| `volan-dialect-h2` | `testRuntimeOnly` | Для in-memory тестов; ещё не выпущен |
+| `volan-codegen` | `implementation` (classpath задачи сборки) | Только для сборки; исключите из публикуемых артефактов |
+| `volan-coroutines` | `implementation` | Ещё не выпущен |
+
+## Что дальше
+
+<CardGroup cols={2}>
+  <Card title="Быстрый старт" icon="rocket" href="/ru/quickstart">
+    Пройдите весь путь: написание схемы, генерация клиента и первый запрос.
+  </Card>
+
+  <Card title="Введение" icon="book-open" href="/ru/introduction">
+    Узнайте, чем Volan отличается от Hibernate, JOOQ и Exposed.
+  </Card>
+</CardGroup>

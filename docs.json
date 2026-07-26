@@ -15,64 +15,111 @@
     }
   },
   "navigation": {
-    "tabs": [
+    "languages": [
       {
-        "tab": "Documentation",
-        "groups": [
+        "language": "en",
+        "default": true,
+        "tabs": [
           {
-            "group": "Get Started",
-            "pages": [
-              "introduction",
-              "quickstart",
-              "installation"
+            "tab": "Documentation",
+            "groups": [
+              {
+                "group": "Get Started",
+                "pages": [
+                  "introduction",
+                  "quickstart",
+                  "installation"
+                ]
+              },
+              {
+                "group": "Schema",
+                "pages": [
+                  "schema/overview",
+                  "schema/models",
+                  "schema/fields",
+                  "schema/relations",
+                  "schema/attributes",
+                  "schema/enums"
+                ]
+              },
+              {
+                "group": "Querying",
+                "pages": [
+                  "querying/reading",
+                  "querying/filtering",
+                  "querying/ordering-pagination",
+                  "querying/relations",
+                  "querying/aggregation",
+                  "querying/raw-sql"
+                ]
+              },
+              {
+                "group": "Writing",
+                "pages": [
+                  "writing/create",
+                  "writing/update",
+                  "writing/delete",
+                  "writing/nested-writes",
+                  "writing/transactions"
+                ]
+              },
+              {
+                "group": "Configuration",
+                "pages": [
+                  "configuration/datasource",
+                  "configuration/codegen",
+                  "configuration/dialects"
+                ]
+              },
+              {
+                "group": "Reference",
+                "pages": [
+                  "reference/error-codes",
+                  "reference/exceptions",
+                  "reference/comparison"
+                ]
+              }
             ]
-          },
+          }
+        ]
+      },
+      {
+        "language": "ru",
+        "tabs": [
           {
-            "group": "Schema",
-            "pages": [
-              "schema/overview",
-              "schema/models",
-              "schema/fields",
-              "schema/relations",
-              "schema/attributes",
-              "schema/enums"
-            ]
-          },
-          {
-            "group": "Querying",
-            "pages": [
-              "querying/reading",
-              "querying/filtering",
-              "querying/ordering-pagination",
-              "querying/relations",
-              "querying/aggregation",
-              "querying/raw-sql"
-            ]
-          },
-          {
-            "group": "Writing",
-            "pages": [
-              "writing/create",
-              "writing/update",
-              "writing/delete",
-              "writing/nested-writes",
-              "writing/transactions"
-            ]
-          },
-          {
-            "group": "Configuration",
-            "pages": [
-              "configuration/datasource",
-              "configuration/codegen",
-              "configuration/dialects"
-            ]
-          },
-          {
-            "group": "Reference",
-            "pages": [
-              "reference/error-codes",
-              "reference/exceptions",
-              "reference/comparison"
+            "tab": "Документация",
+            "groups": [
+              {
+                "group": "Начало работы",
+                "pages": [
+                  "ru/introduction",
+                  "ru/quickstart",
+                  "ru/installation"
+                ]
+              },
+              {
+                "group": "Схема",
+                "pages": [
+                  "ru/schema/overview",
+                  "ru/schema/models"
+                ]
+              },
+              {
+                "group": "Запросы",
+                "pages": []
+              },
+              {
+                "group": "Запись данных",
+                "pages": []
+              },
+              {
+                "group": "Конфигурация",
+                "pages": []
+              },
+              {
+                "group": "Справочник",
+                "pages": []
+              }
             ]
           }
         ]

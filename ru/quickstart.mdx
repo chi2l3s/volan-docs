@@ -1,0 +1,277 @@
+---
+title: "Быстрый старт с Volan за 5 минут (JVM / Gradle)"
+sidebarTitle: "Быстрый старт"
+description: "Добавьте Volan в Gradle-проект, напишите схему, запустите генератор кода и выполните первый типобезопасный запрос к PostgreSQL за несколько минут."
+---
+
+Это руководство проведёт вас через добавление Volan в существующий Gradle-проект, написание минимальной схемы, генерацию клиента и выполнение первого запроса. Предполагается, что вы используете Gradle с Kotlin DSL (`build.gradle.kts`) и у вас есть доступная база данных PostgreSQL. Потребуется JDK 17 или новее.
+
+<Note>
+  Volan находится в стадии до 1.0 и пока не опубликован в Maven Central. Перед продолжением воспользуйтесь страницей [Установка](/ru/installation), чтобы собрать его из исходного кода и установить в локальный репозиторий Maven.
+</Note>
+
+<Steps>
+  <Step title="Добавьте зависимости в Gradle-проект">
+    Подключите BOM Volan, чтобы все модули использовали единую версию, затем добавьте рантайм и диалект PostgreSQL. Генератор кода нужен только на этапе сборки.
+
+    ```kotlin build.gradle.kts
+    repositories {
+        mavenLocal() // Volan устанавливается локально до публикации в Maven Central
+        mavenCentral()
+    }
+    
+    dependencies {
+        // Подключаем BOM для согласования версий всех модулей Volan
+        implementation(platform("io.github.thirtyeighttwentysix:volan-bom:0.1.0-SNAPSHOT"))
+    
+        // Рантайм: выполнение запросов, JDBC, пул соединений, транзакции
+        implementation("io.github.thirtyeighttwentysix:volan-runtime")
+    
+        // Диалект PostgreSQL — обнаруживается автоматически через ServiceLoader
+        runtimeOnly("io.github.thirtyeighttwentysix:volan-dialect-postgres")
+    
+        // Генератор кода — используется только при сборке
+        implementation("io.github.thirtyeighttwentysix:volan-codegen")
+    }
+    ```
+
+    <Tip>
+      Благодаря BOM вам никогда не нужно указывать версию для отдельных артефактов `volan-*`. Чтобы позже добавить или убрать модуль, достаточно изменить одну строку.
+    </Tip>
+  </Step>
+  <Step title="Зарегистрируйте задачу генерации кода">
+    Добавьте в сборочный скрипт задачу, вызывающую `VolanGenerator`. Укажите ей путь к файлу схемы и выберите выходной каталог, который входит в компилируемый source set.
+
+    ```kotlin build.gradle.kts
+    import io.github.thirtyeighttwentysix.volan.codegen.VolanGenerator
+    import io.github.thirtyeighttwentysix.volan.ir.SchemaLoader
+    import io.github.thirtyeighttwentysix.volan.schema.SourceFile
+    
+    val generateVolanClient by tasks.registering {
+        group = "volan"
+        description = "Generates the Volan client from schema.volan."
+    
+        val schemaFile = layout.projectDirectory.file("schema.volan")
+        val outputDir  = layout.buildDirectory.dir("generated/volan")
+    
+        inputs.file(schemaFile)
+        outputs.dir(outputDir)
+    
+        doLast {
+            val source = schemaFile.asFile.readText()
+            val result = SchemaLoader.load(SourceFile("schema.volan", source))
+            if (result.hasErrors) error(result.render())
+            outputDir.get().asFile.deleteRecursively()
+            val written = VolanGenerator.writeTo(result.schemaOrThrow(), outputDir.get().asFile.toPath())
+            written.forEach { println("generated $it") }
+        }
+    }
+    
+    // Связываем основную задачу компиляции с генерацией
+    tasks.compileKotlin { dependsOn(generateVolanClient) }   // Kotlin
+    tasks.compileJava   { dependsOn(generateVolanClient) }   // Java
+    
+    // Добавляем сгенерированные исходники в основной source set
+    kotlin.sourceSets["main"].kotlin.srcDir(
+        layout.buildDirectory.dir("generated/volan")
+    )
+    ```
+  </Step>
+  <Step title="Напишите файл schema.volan">
+    Создайте `schema.volan` в корне проекта. Файл объявляет источник данных, блок генератора (который задаёт выходной пакет и целевой язык) и ваши модели.
+
+    ```prisma schema.volan
+    datasource db {
+      provider = "postgresql"
+      url      = env("DATABASE_URL")
+    }
+    
+    generator client {
+      provider     = "volan-kotlin"
+      package      = "com.example.blog"
+      output       = "build/generated/volan"
+      javaFriendly = true
+    }
+    
+    model Post {
+      id       Int     @id @default(autoincrement())
+      title    String
+      body     String?
+      draft    Boolean @default(true)
+    
+      @@map("posts")
+    }
+    ```
+
+    Поле `package` задаёт имя пакета для сгенерированных исходников и также определяет имя сгенерированного класса клиента. Пакет `com.example.blog` даёт класс с именем `BlogClient`.
+
+    <Tip>
+      Параметр `javaFriendly = true` генерирует дополнительные совместимые с Java методы доступа и companion-объекты, так что один и тот же клиент идиоматично работает и из Kotlin, и из Java.
+    </Tip>
+  </Step>
+  <Step title="Запустите генератор кода">
+    Запустите задачу генерации. Volan проверит схему, сообщит обо всех ошибках с фрагментом кода и подсказкой по исправлению, а затем запишет сгенерированные исходники в `build/generated/volan`.
+
+    ```bash
+    ./gradlew generateVolanClient
+    ```
+
+    При успешном выполнении выводится строка на каждый записанный файл:
+
+    ```text
+    generated build/generated/volan/com/example/blog/BlogClient.kt
+    generated build/generated/volan/com/example/blog/Post.kt
+    generated build/generated/volan/com/example/blog/PostFields.kt
+    ```
+
+    Основная задача компиляции также запускает генерацию автоматически — благодаря связке `dependsOn`, добавленной на шаге 2.
+  </Step>
+  <Step title="Подключитесь через сгенерированный клиент">
+    Создайте экземпляр клиента через билдер. Передайте JDBC-URL, учётные данные и при желании размер пула. Клиент владеет пулом соединений на всё время жизни приложения — создайте один экземпляр и переиспользуйте его.
+
+    <CodeGroup>
+
+    ```kotlin Kotlin
+    import com.example.blog.BlogClient
+    
+    val db = BlogClient.builder()
+        .url("jdbc:postgresql://localhost:5432/mydb")
+        .username("myuser")
+        .password("secret")
+        .maxPoolSize(10)
+        .build()
+    ```
+
+    ```java Java
+    import com.example.blog.BlogClient;
+    
+    BlogClient db = BlogClient.builder()
+            .url("jdbc:postgresql://localhost:5432/mydb")
+            .username("myuser")
+            .password("secret")
+            .maxPoolSize(10)
+            .build();
+    ```
+
+    </CodeGroup>
+
+    Закройте клиент при завершении работы приложения, чтобы освободить пул соединений:
+
+    <CodeGroup>
+
+    ```kotlin Kotlin
+    db.close()
+    ```
+
+    ```java Java
+    db.close();
+    ```
+
+    </CodeGroup>
+  </Step>
+  <Step title="Выполните первый запрос">
+    Используйте `findMany`, чтобы получить все строки, или добавьте блок `where` для фильтрации. Все имена полей в DSL генерируются из вашей схемы — компилятор сразу поймает опечатки.
+
+    <CodeGroup>
+
+    ```kotlin Kotlin
+    // Получить все посты
+    val posts = db.post.findMany()
+    
+    // Фильтрация, сортировка и пагинация
+    val drafts = db.post.findMany {
+        where { draft eq true }
+        orderBy { title.asc() }
+        take = 10
+    }
+    
+    // Найти один пост по первичному ключу — бросает VolanNotFoundException, если его нет
+    val post = db.post.findUnique {
+        where { id eq 1 }
+    }
+    
+    // Посчитать подходящие строки
+    val total = db.post.count { where { draft eq false } }
+    ```
+
+    ```java Java
+    import java.util.List;
+    import com.example.blog.Post;
+    
+    // Получить все посты
+    List<Post> posts = db.post().findMany();
+    
+    // Фильтрация, сортировка и пагинация
+    List<Post> drafts = db.post().findMany(q -> q
+            .where(w -> w.draft().eq(true))
+            .orderBy(Post_.TITLE.asc())
+            .take(10));
+    
+    // Найти один пост по первичному ключу — бросает VolanNotFoundException, если его нет
+    Post post = db.post().findUnique(q -> q
+            .where(w -> w.id().eq(1)));
+    
+    // Посчитать подходящие строки
+    long total = db.post().count(q -> q.where(w -> w.draft().eq(false)));
+    ```
+
+    </CodeGroup>
+  </Step>
+  <Step title="Запись и удаление данных">
+    Тот же сгенерированный клиент обрабатывает все операции записи. `create` вставляет строку и возвращает её полностью заполненной, `update` изменяет подходящую строку, а `delete` удаляет её и возвращает то, что было.
+
+    <CodeGroup>
+
+    ```kotlin Kotlin
+    // Создать новый пост
+    val created = db.post.create {
+        title = "Hello, Volan"
+        body  = "A schema-first ORM for the JVM."
+        draft = false
+    }
+    
+    // Обновить поле
+    val updated = db.post.update {
+        where { id eq created.id }
+        data  { title = "Hello, Volan (edited)" }
+    }
+    
+    // Удалить и получить удалённую строку обратно
+    val removed = db.post.delete {
+        where { id eq updated.id }
+    }
+    ```
+
+    ```java Java
+    // Создать новый пост
+    Post created = db.post().create(p -> {
+        p.title("Hello, Volan");
+        p.body("A schema-first ORM for the JVM.");
+        p.draft(false);
+    });
+    
+    // Обновить поле
+    Post updated = db.post().update(q -> q
+            .where(w -> w.id().eq(created.getId()))
+            .data(d -> d.title("Hello, Volan (edited)")));
+    
+    // Удалить и получить удалённую строку обратно
+    Post removed = db.post().delete(q -> q
+            .where(w -> w.id().eq(updated.getId())));
+    ```
+
+    </CodeGroup>
+  </Step>
+</Steps>
+
+## Что дальше
+
+<CardGroup cols={2}>
+  <Card title="Установка" icon="box" href="/ru/installation">
+    Полный список модулей, использование BOM и все параметры конфигурации Gradle.
+  </Card>
+
+  <Card title="Язык схемы" icon="file-code" href="https://github.com/thirtyeighttwentysix/volan/blob/main/docs/schema-language.md">
+    Полный справочник по синтаксису `schema.volan`, типам, связям и атрибутам.
+  </Card>
+</CardGroup>
