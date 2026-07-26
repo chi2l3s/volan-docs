@@ -328,7 +328,7 @@ model Empty {}
 
 <Accordion title="E0120 — ATTRIBUTE_NOT_ALLOWED_HERE">
 
-**Cause:** An attribute was placed in a context that does not accept it (e.g. inside an `enum` value where it is unsupported).
+**Cause:** An attribute was placed in a context that does not accept it (e.g. a block attribute inside a `datasource` or `generator` block).
 
 **Fix:** Remove the attribute or move it to a supported context.
 
@@ -348,88 +348,88 @@ model Empty {}
 
 Semantic errors are reported after the schema parses successfully. They represent logical or type-level inconsistencies that make the schema invalid.
 
-### Naming and Duplicates
+### Declarations and Naming
 
-| Code | Description |
-|------|-------------|
-| `E0200` | Duplicate model name — two `model` blocks share the same name |
-| `E0201` | Duplicate field name within a model |
-| `E0202` | Duplicate enum name |
-| `E0203` | Duplicate enum value name within the same enum |
-| `E0234` | Duplicate `datasource` or `generator` declaration |
+| Code | Name | Description |
+|------|------|-------------|
+| `E0200` | `DUPLICATE_DECLARATION` | Two top-level declarations (models or enums) share the same name |
+| `E0201` | `UNKNOWN_TYPE` | A field's type is neither a scalar, an enum, nor a model defined in this schema |
+| `E0202` | `DUPLICATE_MEMBER` | Two fields of one model, or two values of one enum, share a name |
 
-### Type Resolution
+### Datasource and Generator Configuration
 
-<Accordion title="E0204 — Unknown type referenced">
+| Code | Name | Description |
+|------|------|-------------|
+| `E0203` | `MISSING_DATASOURCE` | The schema has no `datasource` block |
+| `E0204` | `DUPLICATE_DATASOURCE` | The schema has more than one `datasource` block |
+| `E0205` | `UNKNOWN_PROVIDER` | The `provider` names a database Volan does not support |
+| `E0206` | `MISSING_OPTION` | A `datasource` or `generator` block is missing a required property |
+| `E0207` | `UNKNOWN_OPTION` | A `datasource` or `generator` block declares a property that has no meaning there |
+| `E0208` | `INVALID_OPTION_VALUE` | A configuration property has a value of the wrong kind |
 
-**Cause:** A field type refers to a model or enum name that does not exist in the schema.
+### Identity and Primary Keys
 
-```volan
-// ❌ — Category is not defined
-model Post {
-  category Category
-}
-```
+| Code | Name | Description |
+|------|------|-------------|
+| `E0209` | `MISSING_PRIMARY_KEY` | A model declares no primary key — every model must have exactly one `@id` or `@@id` |
+| `E0210` | `DUPLICATE_PRIMARY_KEY` | A model declares its primary key more than once |
+| `E0211` | `INVALID_ID_FIELD` | A field cannot be part of a primary key (e.g. it is a relation or list field) |
 
-**Fix:** Define the missing type or correct the spelling.
+### Attributes
 
-</Accordion>
+| Code | Name | Description |
+|------|------|-------------|
+| `E0212` | `UNKNOWN_ATTRIBUTE` | An attribute name is not one Volan recognises |
+| `E0213` | `UNKNOWN_ATTRIBUTE_ARGUMENT` | An attribute was given an argument it does not accept |
+| `E0214` | `MISSING_ATTRIBUTE_ARGUMENT` | An attribute is missing a required argument |
+| `E0215` | `INVALID_ATTRIBUTE_TARGET` | An attribute cannot be used on this kind of field or block |
+| `E0216` | `DUPLICATE_ATTRIBUTE` | The same attribute was applied to a field or block more than once |
+| `E0231` | `UNKNOWN_ATTRIBUTE_NAMESPACE` | A native-type attribute uses a namespace other than `db` (e.g. `@pg.VarChar` instead of `@db.VarChar`) |
 
-### Identity
+### Defaults and Field Constraints
 
-| Code | Description |
-|------|-------------|
-| `E0205` | A model has neither a field-level `@id` nor a model-level `@@id` — every model must have exactly one identity |
-| `E0206` | A field name listed in `@@id([…])` does not exist on the model |
-| `E0223` | `@@id` is used on a model that already has a field-level `@id` — choose one form |
-| `E0229` | A field that is part of a composite `@@id` is marked nullable (`?`) |
-| `E0232` | A field annotated with `@id` is also marked nullable (`?`) |
-
-### Defaults
-
-| Code | Description |
-|------|-------------|
-| `E0207` | `@default` on an `@id` field — use `@id` alone (auto-increment / UUID is implied by the type) |
-| `E0208` | `@default` value type does not match the field type |
-| `E0220` | `@default` on a relation field — defaults on relations are not supported |
-| `E0221` | `@default(autoincrement())` on a non-integer field |
-| `E0222` | `@default(now())` on a non-DateTime field |
-| `E0233` | `@default` on a nullable field with no sensible default |
+| Code | Name | Description |
+|------|------|-------------|
+| `E0217` | `INVALID_DEFAULT` | A `@default` value does not fit the field it is on — for example, a string default on an `Int` field, or `autoincrement()` on a non-integer field |
+| `E0218` | `INVALID_UPDATED_AT` | `@updatedAt` is on a field that is not `DateTime` |
+| `E0229` | `INVALID_UNIQUE_FIELD` | `@unique` is on a field that cannot carry it (e.g. a list or relation field) |
+| `E0230` | `EMPTY_FIELD_LIST` | A `@@unique` or `@@index` constraint was declared over an empty field list |
 
 ### Relations
 
-<Accordion title="E0209 — @relation on a non-relation field">
+<Accordion title="E0219 — UNKNOWN_FIELD_REFERENCE">
 
-**Cause:** `@relation` was placed on a scalar field (e.g. `String`, `Int`).
+**Cause:** An attribute such as `@relation(fields: […])`, `@@unique([…])`, or `@@index([…])` names a field that does not exist on the model.
 
-**Fix:** Remove `@relation` from scalar fields. Only fields whose type is another model need `@relation`.
+```volan
+// ❌ — authorId is not declared
+model Post {
+  id       Int  @id @default(autoincrement())
+  author   User @relation(fields: [authorId], references: [id])
+}
+```
+
+**Fix:** Declare the missing field, or correct the name.
 
 </Accordion>
 
-| Code | Description |
-|------|-------------|
-| `E0210` | `fields:` in `@relation` references a field that does not exist on the model |
-| `E0211` | The number of columns in `references:` does not match the number in `fields:` |
-| `E0212` | Both ends of the same relation define `fields:` — only the owning side should |
-| `E0213` | Neither end of the relation defines `fields:` for a required one-to-one or many-to-one |
-| `E0214` | A referential action (`onDelete`, `onUpdate`) is specified on the non-owning side of a relation |
-| `E0215` | A relation name is used by more than two models |
-| `E0216` | A relation name appears more than once on the same model |
-| `E0217` | An explicit many-to-many relation has `fields:` — M2M relations must not declare `fields:` |
-| `E0226` | An implicit many-to-many relation is missing a `@relation("Name")` disambiguator |
-| `E0227` | An optional many-to-many field (`Model[]?`) is not valid; lists are always non-null |
-| `E0228` | Unknown value for `onDelete` or `onUpdate` — valid values are `Cascade`, `Restrict`, `SetNull`, `SetDefault`, `NoAction` |
-| `E0231` | A relation cycle was detected where every `onDelete` action is `Cascade`, which would cause unbounded deletes |
+| Code | Name | Description |
+|------|------|-------------|
+| `E0220` | `RELATION_MISSING_OPPOSITE` | A relation field has no matching field on the other model |
+| `E0221` | `RELATION_AMBIGUOUS` | Several relation fields between two models could pair up, and no `@relation("Name")` disambiguator is present |
+| `E0222` | `RELATION_ARGUMENT_MISMATCH` | `fields:` and `references:` in `@relation` do not have the same number of entries |
+| `E0223` | `RELATION_INVALID_SIDE` | `fields:` and `references:` are on the wrong side of the relation, or are declared on both sides |
+| `E0224` | `RELATION_REFERENCE_NOT_UNIQUE` | A relation points at fields that are not uniquely identifying on the referenced model |
+| `E0225` | `RELATION_TYPE_MISMATCH` | A foreign key field has a different type from the field it references |
+| `E0226` | `INVALID_REFERENTIAL_ACTION` | A referential action (`onDelete`, `onUpdate`) cannot be applied to this relation |
+| `E0232` | `UNSATISFIABLE_REQUIRED_RELATION` | A model has a required relation to itself, so no row could ever be inserted |
+| `E0233` | `RELATION_FOREIGN_KEY_NOT_UNIQUE` | The foreign key of a one-to-one relation is not marked unique, so it could point at one row from multiple rows |
 
-### Other Field Constraints
+### Mapped Names
 
-| Code | Description |
-|------|-------------|
-| `E0218` | `@unique` on a list field — uniqueness on list fields is not supported |
-| `E0219` | `@updatedAt` on a non-`DateTime` field |
-| `E0224` | `@@unique([…])` references a field that does not exist on the model |
-| `E0225` | `@@index([…])` references a field that does not exist on the model |
-| `E0230` | A scalar list field is marked nullable (`Type[]?`) — not valid |
+| Code | Name | Description |
+|------|------|-------------|
+| `E0227` | `DUPLICATE_MAPPED_NAME` | Two models map to the same table name, or two fields of a model map to the same column name via `@map` |
 
 ---
 
@@ -450,7 +450,7 @@ Warnings do not prevent code generation but indicate patterns you should address
 
 </Accordion>
 
-<Accordion title="W0002 — Inline database URL">
+<Accordion title="E0234 — CONNECTION_URL_IN_SCHEMA">
 
 **Cause:** A literal database URL (containing credentials) is written directly in the schema file, which may be committed to source control.
 
@@ -472,9 +472,9 @@ datasource db {
 
 </Accordion>
 
-<Accordion title="W0003 — Cascade cycle warning">
+<Accordion title="E0228 — CASCADE_CYCLE">
 
-**Cause:** An `onDelete: Cascade` chain forms a loop in the schema. This is allowed (unlike `E0231`, where *all* actions are Cascade) but may produce unexpected behaviour at runtime.
+**Cause:** An `onDelete: Cascade` chain forms a loop in the schema. This is allowed but may produce unexpected behaviour at runtime depending on your database's handling of cyclic cascades.
 
 **Fix:** Review your referential actions and consider using `Restrict` or `SetNull` to break the cycle.
 

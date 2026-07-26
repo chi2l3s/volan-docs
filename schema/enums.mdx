@@ -1,7 +1,7 @@
 ---
-title: "Enums in Volan: Definition and Generated Code"
+title: "Enums in Volan: Definition and Generated Kotlin Code"
 sidebarTitle: "Enums"
-description: "Declare Volan enums, map values and table names to custom database strings, and understand the generated Kotlin enum class with databaseValue and fromDatabaseValue()."
+description: "Declare Volan enums, map values and type names to custom database strings, and understand the generated Kotlin enum class with databaseValue."
 ---
 
 Enums let you define a fixed set of named values and use them as field types in your models. Volan stores enum values in the database as strings and generates a Kotlin `enum class` that handles serialisation and deserialisation automatically. You can control exactly what string is written to the database without affecting the Kotlin name.

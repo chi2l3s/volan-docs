@@ -10,20 +10,12 @@ Volan provides two delete operations: `delete` for removing a single known recor
 
 Use `db.<model>.delete {}` to remove one row by a unique filter and receive the deleted entity back. Returning the entity lets you confirm exactly what was removed — useful for audit logging or post-delete cleanup.
 
-<CodeGroup>
-```kotlin Kotlin
+```kotlin
 val user = db.user.delete {
     where { id eq 42 }
 }
 // `user` holds the entity as it was immediately before deletion
 ```
-
-```java Java
-User user = db.user().delete(d -> d
-    .where(w -> w.id().eq(42))
-);
-```
-</CodeGroup>
 
 ### Throws when the record is not found
 

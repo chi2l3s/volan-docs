@@ -28,8 +28,8 @@ Every text operator also has an `.ignoringCase()` variant that performs a case-i
 db.user.findMany {
     where {
         email endsWith "@acme.com"
-        name contains "alice" ignoringCase()
-        username startsWith "admin" ignoringCase()
+        name.ignoringCase() contains "alice"
+        username.ignoringCase() startsWith "admin"
     }
 }
 ```
@@ -76,7 +76,7 @@ Numeric and temporal fields support range comparisons in addition to the equalit
 db.post.findMany {
     where {
         views gte 1000
-        createdAt between (thirtyDaysAgo to now)
+        createdAt.between(thirtyDaysAgo, now)
         score lt 4.5
     }
 }

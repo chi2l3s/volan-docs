@@ -1,5 +1,5 @@
 ---
-title: "Sorting, Pagination, and Projections in Volan"
+title: "Sorting, Offset and Cursor Pagination in Volan ORM"
 sidebarTitle: "Ordering & Pagination"
 description: "Sort query results, paginate with offset or cursor strategies, deduplicate with distinct, and fetch partial records using select projections."
 ---
@@ -100,7 +100,7 @@ val firstPage = db.post.findMany {
 
 // Subsequent pages — pass the id of the last record from the previous page
 val nextPage = db.post.findMany {
-    cursor(id to lastSeenId)
+    cursor(id = lastSeenId)
     take = 10
 }
 ```

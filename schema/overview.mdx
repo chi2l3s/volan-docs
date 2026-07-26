@@ -1,5 +1,5 @@
 ---
-title: "schema.volan Language Overview"
+title: "Volan Schema Language: Structure, Blocks, and Diagnostics"
 sidebarTitle: "Overview"
 description: "Learn how a schema.volan file is structured, its four block types, how to run the formatter, and how Volan surfaces error diagnostics."
 ---
@@ -84,18 +84,18 @@ generator client {
 
 ## Running the formatter
 
-Volan ships with a built-in formatter that normalises whitespace, aligns `=` signs within blocks, and orders fields consistently. Run it from the project root:
+Volan ships with a built-in formatter that normalises whitespace, aligns field names and types in columns, and aligns `=` signs within config blocks. Run it from the project root:
 
 ```bash
 volan format
 ```
 
-The formatter rewrites `schema.volan` in place. Regular `// comments` are dropped during formatting; `/// doc comments` are preserved and forwarded into generated code.
+The formatter rewrites `schema.volan` in place. Both `// comments` and `/// doc comments` are preserved in the position the author put them, as are the blank lines used to group fields. `/// doc comments` are additionally forwarded into generated Kotlin code as KDoc.
 
 ## Comments and doc comments
 
 ```prisma
-// This comment is dropped by the formatter.
+// This comment is preserved by the formatter.
 
 /// This doc comment is preserved and appears in the generated Kotlin class.
 model Post {
@@ -103,7 +103,7 @@ model Post {
 }
 ```
 
-Use `///` doc comments on models and fields to add KDoc to generated classes and properties.
+Use `///` doc comments on models and fields to add KDoc to generated classes and properties. Use `//` for notes that should stay in the schema file but do not need to appear in generated code.
 
 ## Error diagnostics
 
@@ -111,12 +111,12 @@ When your schema contains an error, Volan prints a structured diagnostic that po
 
 ```
 error[E0104]: expected a field type
- ┌─ schema.volan:5:9
+ ┌─ schema.volan:2:9
  │
-5│   email @unique
- │         ^ a field is written as `name Type`
+2│   email @unique
+ │         ^ found `@`
  │
- = help: add a type, for example `email String`
+ = help: a field is written as `name Type`, for example `email String`
 ```
 
 Diagnostics include an error code, a file/line/column pointer, a short explanation, and a `help` hint where possible. Validation errors are always caught before any code generation or migration begins.
@@ -124,6 +124,121 @@ Diagnostics include an error code, a file/line/column pointer, a short explanati
 <Note>
   Volan validates the entire schema before it generates any code. If any model, relation, or attribute is invalid, the whole run is aborted and no files are written.
 </Note>
+
+### Syntax error codes (E0001–E0121)
+
+These codes are reported when the document is not well-formed — the schema cannot be parsed at all.
+
+| Code | Meaning |
+|---|---|
+| `E0001` | Unterminated string literal |
+| `E0002` | Invalid escape sequence |
+| `E0003` | Unexpected character |
+| `E0004` | Block comments are not supported |
+| `E0005` | Malformed number literal |
+| `E0100` | Unknown top-level declaration |
+| `E0101` | Expected a name |
+| `E0102` | Expected `{` |
+| `E0103` | Unclosed block |
+| `E0104` | Expected a field type |
+| `E0105` | Expected `=` |
+| `E0106` | Expected a value |
+| `E0107` | Unclosed argument list |
+| `E0108` | Unclosed list |
+| `E0109` | A list type cannot be optional |
+| `E0110` | Nested list types are not supported |
+| `E0111` | Repeated `?` marker |
+| `E0112` | `@` used where `@@` belongs, or the reverse |
+| `E0113` | Expected an attribute name |
+| `E0114` | Expected a name after `.` |
+| `E0115` | Named argument without a value |
+| `E0116` | Unexpected token at the top level |
+| `E0117` | Model without fields |
+| `E0118` | Enum without values |
+| `E0119` | Configuration property without a value |
+| `E0120` | Attribute in a `datasource` or `generator` block |
+| `E0121` | Unexpected token inside a block |
+
+`W0001` is a warning for a doc comment that cannot be attached to any declaration.
+
+### Semantic error codes (E0200–E0234)
+
+These codes are reported after parsing succeeds, when the schema is structurally valid but logically incorrect.
+
+| Code | Meaning |
+|---|---|
+| `E0200` | Two declarations share a name |
+| `E0201` | Unknown field type |
+| `E0202` | Duplicate field, enum value, or property |
+| `E0203` | No `datasource` block |
+| `E0204` | More than one `datasource` block |
+| `E0205` | Unknown database provider |
+| `E0206` | Required block property missing |
+| `E0207` | Unknown block property |
+| `E0208` | Property or argument of the wrong kind |
+| `E0209` | Model without a primary key |
+| `E0210` | Primary key declared twice |
+| `E0211` | Field cannot be part of a primary key |
+| `E0212` | Unknown attribute |
+| `E0213` | Unknown attribute argument |
+| `E0214` | Missing attribute argument |
+| `E0215` | Attribute not allowed on this target |
+| `E0216` | Attribute applied twice |
+| `E0217` | `@default` does not fit the field |
+| `E0218` | `@updatedAt` on a field it cannot maintain |
+| `E0219` | Attribute refers to an unknown field |
+| `E0220` | Relation has no matching field on the other model |
+| `E0221` | Several relation fields could pair up |
+| `E0222` | `fields` and `references` do not line up |
+| `E0223` | Foreign key declared on the wrong side, on both, or on neither |
+| `E0224` | `references` does not identify a row |
+| `E0225` | Foreign key and referenced field have different types |
+| `E0226` | Referential action unknown or impossible |
+| `E0227` | Two models or fields map to one database name |
+| `E0228` | Cascade loops back on itself *(warning)* |
+| `E0229` | `@unique` on a field that cannot carry it |
+| `E0230` | Constraint declared over no fields |
+| `E0231` | Unknown attribute namespace |
+| `E0232` | A model requires a row of itself |
+| `E0233` | One-to-one foreign key is not unique |
+| `E0234` | Connection URL written into the schema *(warning)* |
+
+## Parsing and formatting API
+
+For tooling and build integrations, Volan exposes `SchemaParser` and `SchemaFormatter` as stable JVM objects.
+
+### `SchemaParser`
+
+```kotlin
+// Parse and inspect diagnostics
+val result = SchemaParser.parse("schema.volan", File("schema.volan").readText())
+if (result.hasErrors) {
+    print(result.render())  // prints human-readable diagnostics
+}
+
+// Parse or throw on error
+val document = SchemaParser.parseOrThrow(source)
+```
+
+| Method | Description |
+|---|---|
+| `SchemaParser.parse(name, text)` | Parses `text` and returns a result object with `hasErrors`, `render()`, and the list of diagnostics. Never throws. |
+| `SchemaParser.parseOrThrow(source)` | Parses and returns the document, or throws if the schema contains errors. The exception message is the fully rendered diagnostic output. |
+
+### `SchemaFormatter`
+
+```kotlin
+// Format from text directly
+val formatted = SchemaFormatter.format("schema.volan", File("schema.volan").readText())
+
+// Format a previously parsed document
+val formatted = SchemaFormatter.format(document)
+```
+
+| Method | Description |
+|---|---|
+| `SchemaFormatter.format(name, text)` | Parses and returns the canonical formatted text as a `String`. Throws if the schema contains errors. |
+| `SchemaFormatter.format(document)` | Formats an already-parsed document and returns the result as a `String`. |
 
 ## What to read next
 

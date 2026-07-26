@@ -56,7 +56,7 @@ Running the generator against your schema produces the following artifacts under
 
 ## Wiring up the Gradle task
 
-An official Gradle plugin is on the roadmap for **milestone M9**. Until then, you can wire the generator up manually using a `JavaExec` task.
+An official Gradle plugin is on the roadmap for **milestone M9**. Until then, you wire the generator up manually by writing a small launcher and registering a `JavaExec` task.
 
 <Steps>
 
@@ -87,9 +87,56 @@ Add the dialect artifact that corresponds to your database. See [Dialects](/conf
 
 </Step>
 
+<Step title="Write the generator launcher">
+
+Create a small Kotlin `main` function that loads your schema and calls `VolanGenerator.writeTo()`. Place it in a dedicated source directory (e.g. `src/generator/kotlin`) so it is compiled against `generatorClasspath` only and never leaks onto your main classpath.
+
+```kotlin
+// src/generator/kotlin/generate/GenerateClient.kt
+
+package generate
+
+import io.github.thirtyeighttwentysix.volan.codegen.VolanGenerator
+import io.github.thirtyeighttwentysix.volan.ir.SchemaLoader
+import io.github.thirtyeighttwentysix.volan.schema.SourceFile
+import java.nio.file.Path
+import kotlin.io.path.readText
+import kotlin.system.exitProcess
+
+fun main(arguments: Array<String>) {
+    if (arguments.size != 2) {
+        System.err.println("usage: generate-client <schema.volan> <output directory>")
+        exitProcess(2)
+    }
+    val schemaPath = Path.of(arguments[0])
+    val result = SchemaLoader.load(SourceFile(schemaPath.fileName.toString(), schemaPath.readText()))
+    if (result.hasErrors) {
+        System.err.print(result.render())
+        exitProcess(1)
+    }
+    val output = Path.of(arguments[1])
+    output.toFile().deleteRecursively()
+    val written = VolanGenerator.writeTo(result.schemaOrThrow(), output)
+    written.forEach { println("generated $it") }
+}
+```
+
+Wire the dedicated source directory into the generator configuration in your build file:
+
+```kotlin
+val generator: SourceSet by sourceSets.creating
+
+dependencies {
+    "generatorImplementation"("io.github.thirtyeighttwentysix:volan-codegen:0.1.0-SNAPSHOT")
+    "generatorImplementation"("io.github.thirtyeighttwentysix:volan-dialect-postgres:0.1.0-SNAPSHOT")
+}
+```
+
+</Step>
+
 <Step title="Register the generation task">
 
-Declare a `JavaExec` task that invokes the generator's main class, passing the schema file path and the output directory as arguments. Configure incremental build support so the task only re-runs when the schema changes.
+Declare a `JavaExec` task that invokes your launcher, passing the schema file path and the output directory as arguments. Configure incremental build support so the task only re-runs when the schema changes.
 
 ```kotlin
 val schemaFile = layout.projectDirectory.file("schema/schema.volan")
@@ -98,8 +145,8 @@ val generatedSources = layout.buildDirectory.dir("generated/volan")
 val generateVolanClient by tasks.registering(JavaExec::class) {
     group = "build"
     description = "Generates the Volan client from schema.volan."
-    classpath = generatorClasspath
-    mainClass.set("io.github.thirtyeighttwentysix.volan.codegen.VolanGeneratorKt")
+    classpath = generator.runtimeClasspath
+    mainClass.set("generate.GenerateClientKt")
     inputs.file(schemaFile).withPathSensitivity(PathSensitivity.RELATIVE)
     outputs.dir(generatedSources)
     args(
@@ -116,7 +163,9 @@ val generateVolanClient by tasks.registering(JavaExec::class) {
 Tell the Kotlin source set about the generated directory, then make `compileKotlin` depend on the generation task so the sources always exist before compilation begins.
 
 ```kotlin
-kotlin.sourceSets["main"].kotlin.srcDir(generatedSources)
+sourceSets.main {
+    kotlin.srcDir(generatedSources)
+}
 tasks.named("compileKotlin") { dependsOn(generateVolanClient) }
 ```
 
@@ -132,26 +181,29 @@ tasks.named("compileKotlin") { dependsOn(generateVolanClient) }
 
 ## Complete `build.gradle.kts` snippet
 
-The snippet below shows all four steps together in context.
+The snippet below shows all steps together in context.
 
 ```kotlin
 // build.gradle.kts
 
-val generatorClasspath: Configuration by configurations.creating
+val generator: SourceSet by sourceSets.creating
+
+val generatedSources = layout.buildDirectory.dir("generated/volan")
+val schemaFile = layout.projectDirectory.file("schema/schema.volan")
 
 dependencies {
-    generatorClasspath("io.github.thirtyeighttwentysix:volan-codegen:0.1.0-SNAPSHOT")
-    generatorClasspath("io.github.thirtyeighttwentysix:volan-dialect-postgres:0.1.0-SNAPSHOT")
-}
+    "generatorImplementation"("io.github.thirtyeighttwentysix:volan-codegen:0.1.0-SNAPSHOT")
+    "generatorImplementation"("io.github.thirtyeighttwentysix:volan-dialect-postgres:0.1.0-SNAPSHOT")
 
-val schemaFile = layout.projectDirectory.file("schema/schema.volan")
-val generatedSources = layout.buildDirectory.dir("generated/volan")
+    implementation("io.github.thirtyeighttwentysix:volan-runtime:0.1.0-SNAPSHOT")
+    runtimeOnly("io.github.thirtyeighttwentysix:volan-dialect-postgres:0.1.0-SNAPSHOT")
+}
 
 val generateVolanClient by tasks.registering(JavaExec::class) {
     group = "build"
     description = "Generates the Volan client from schema.volan."
-    classpath = generatorClasspath
-    mainClass.set("io.github.thirtyeighttwentysix.volan.codegen.VolanGeneratorKt")
+    classpath = generator.runtimeClasspath
+    mainClass.set("generate.GenerateClientKt")
     inputs.file(schemaFile).withPathSensitivity(PathSensitivity.RELATIVE)
     outputs.dir(generatedSources)
     args(
@@ -160,7 +212,9 @@ val generateVolanClient by tasks.registering(JavaExec::class) {
     )
 }
 
-kotlin.sourceSets["main"].kotlin.srcDir(generatedSources)
+sourceSets.main {
+    kotlin.srcDir(generatedSources)
+}
 tasks.named("compileKotlin") { dependsOn(generateVolanClient) }
 ```
 
@@ -168,7 +222,7 @@ tasks.named("compileKotlin") { dependsOn(generateVolanClient) }
 
 ## Generator entry point
 
-Under the hood, the `JavaExec` task calls `VolanGeneratorKt.main()`, which delegates to `VolanGenerator.writeTo()`. If you need to invoke the generator programmatically (for example in a custom build script or a test fixture), the API looks like this:
+The `JavaExec` task calls your launcher, which in turn calls `VolanGenerator.writeTo()`. If you need to invoke the generator programmatically outside of a Gradle build (for example in a custom script), the API looks like this:
 
 ```kotlin
 import io.github.thirtyeighttwentysix.volan.codegen.VolanGenerator

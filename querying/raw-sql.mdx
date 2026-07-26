@@ -1,5 +1,5 @@
 ---
-title: "Raw SQL Queries and Execution in Volan"
+title: "Running Raw SQL Queries and DML Statements in Volan"
 sidebarTitle: "Raw SQL"
 description: "Run hand-written SQL when the query builder isn't enough, with full parameterized binding, a typed Row accessor API, and safe execution for DML statements."
 ---
@@ -15,7 +15,7 @@ Both methods are available directly on the `db` client and are fully integrated 
 ```kotlin
 val emails = db.rawQuery(
     sql = "SELECT id, email FROM users WHERE email LIKE ?",
-    params = listOf("%@acme.com")
+    parameters = listOf("%@acme.com")
 ) { row ->
     row.getString("email")
 }
@@ -33,7 +33,7 @@ data class UserSummary(val id: Int, val email: String)
 
 val summaries = db.rawQuery(
     sql = "SELECT id, email FROM users ORDER BY created_at DESC LIMIT ?",
-    params = listOf(100)
+    parameters = listOf(100)
 ) { row ->
     UserSummary(
         id = row.getInt("id"),
@@ -56,7 +56,7 @@ val stats = db.rawQuery(
         HAVING COUNT(p.id) > ?
         ORDER BY total_views DESC
     """.trimIndent(),
-    params = listOf(oneYearAgo, 0)
+    parameters = listOf(oneYearAgo, 0)
 ) { row ->
     mapOf(
         "name" to row.getString("name"),
@@ -73,7 +73,7 @@ val stats = db.rawQuery(
 ```kotlin
 val affected = db.rawExecute(
     sql = "UPDATE users SET role = ? WHERE id = ?",
-    params = listOf("ADMIN", 42)
+    parameters = listOf("ADMIN", 42)
 )
 println("Rows updated: $affected")
 ```
@@ -82,7 +82,7 @@ println("Rows updated: $affected")
 // Bulk soft-delete
 val deleted = db.rawExecute(
     sql = "UPDATE posts SET deleted_at = NOW() WHERE author_id = ? AND draft = true",
-    params = listOf(userId)
+    parameters = listOf(userId)
 )
 ```
 
@@ -98,7 +98,7 @@ All parameters are passed as `?` placeholders and bound by the JDBC driver. **Ne
   db.rawExecute("DELETE FROM users WHERE email = '$userInput'", emptyList())
   ```
 
-  Always use the `params` list:
+  Always use the `parameters` list:
 
   ```kotlin
   // ✅ Safe — input is bound as a parameter
@@ -124,21 +124,21 @@ The `Row` object passed to your `rawQuery` mapping lambda provides typed getter 
 | `LocalTime` | `getLocalTime(column)` | `getLocalTimeOrNull(column)` |
 | `UUID` | `getUuid(column)` | `getUuidOrNull(column)` |
 | `ByteArray` | `getBytes(column)` | `getBytesOrNull(column)` |
-| `JsonNode` | `getJson(column)` | `getJsonOrNull(column)` |
+| `Json` | `getJson(column)` | `getJsonOrNull(column)` |
 
 The `column` parameter is always the **column alias as it appears in the result set** — either the physical column name or an alias you declared with `AS` in the SQL.
 
 ```kotlin
 db.rawQuery(
     sql = "SELECT created_at AS ts, score::float AS normalized_score FROM posts LIMIT ?",
-    params = listOf(10)
+    parameters = listOf(10)
 ) { row ->
     row.getInstant("ts") to row.getFloatOrNull("normalized_score")
 }
 ```
 
 <Note>
-  `getJson` returns a `JsonNode` from the Jackson `com.fasterxml.jackson.databind` library. Volan deserializes the raw JSON text from the database before handing it to your mapping lambda.
+  `getJson` returns a `Json` wrapper — a thin Volan type that holds the raw JSON text exactly as the database stores it (`value.raw`). Volan does not parse the JSON; pass `value.raw` to whichever JSON library your project already uses.
 </Note>
 
 ## Raw SQL inside transactions

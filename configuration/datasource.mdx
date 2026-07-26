@@ -58,11 +58,11 @@ val db = BlogClient.builder()
 ```
 
 <ParamField path="url" type="String" required>
-  The JDBC connection URL passed directly to HikariCP. Required unless you supply a custom `dataSource`.
+  The JDBC connection URL. Required unless you supply a custom `dataSource`. Also used to auto-discover the correct dialect from the URL prefix.
 </ParamField>
 
 <ParamField path="username" type="String">
-  Database username. Passed to HikariCP; not required if credentials are embedded in the URL or managed by your `DataSource`.
+  Database username. Not required if credentials are embedded in the URL or managed by your `DataSource`.
 </ParamField>
 
 <ParamField path="password" type="String">
@@ -70,7 +70,7 @@ val db = BlogClient.builder()
 </ParamField>
 
 <ParamField path="maxPoolSize" type="Int" default="10">
-  Maximum number of connections HikariCP maintains in the pool. The default of `10` is appropriate for many workloads; tune upward for high-concurrency services.
+  Maximum number of connections maintained in the pool. The default of `10` is appropriate for many workloads; tune upward for high-concurrency services.
 </ParamField>
 
 <ParamField path="connectionTimeout" type="Long" default="30000">
@@ -78,12 +78,8 @@ val db = BlogClient.builder()
 </ParamField>
 
 <ParamField path="poolName" type="String">
-  Optional label assigned to the HikariCP pool. Surfaces in JMX and monitoring dashboards, which is useful when a single JVM hosts more than one pool.
+  Optional label assigned to the connection pool. Surfaces in JMX and monitoring dashboards, which is useful when a single JVM hosts more than one pool.
 </ParamField>
-
-<Note>
-  Volan uses **HikariCP** as its connection pool. The defaults (`maxPoolSize = 10`, `connectionTimeout = 30 000 ms`) mirror HikariCP's own recommended starting values. See the [HikariCP documentation](https://github.com/brettwooldridge/HikariCP#configuration-knobs-baby) for advanced tuning.
-</Note>
 
 ### Bring your own DataSource
 
@@ -114,7 +110,7 @@ val db = BlogClient.builder()
     .build()
 ```
 
-<ParamField path="dialect" type="VolanDialect">
+<ParamField path="dialect" type="Dialect">
   Forces a specific dialect instead of relying on auto-discovery. Must still have the corresponding dialect artifact on the runtime classpath.
 </ParamField>
 
@@ -128,7 +124,7 @@ Call `close()` when your application shuts down to release pool resources cleanl
 db.close()
 ```
 
-- If Volan created the internal HikariCP pool (i.e., you used `.url()`), `close()` shuts the pool down completely.
+- If Volan created the connection pool (i.e., you used `.url()`), `close()` shuts the pool down completely.
 - If you provided your own `DataSource` via `.dataSource()`, `close()` is a no-op — lifecycle management remains the caller's responsibility.
 
 <Warning>
@@ -157,18 +153,12 @@ db.close()
 ```
 
 ```kotlin Kotlin (BYO DataSource)
-val hikari = HikariDataSource(HikariConfig().apply {
-    jdbcUrl  = System.getenv("DATABASE_URL")
-    username = System.getenv("DB_USER")
-    password = System.getenv("DB_PASSWORD")
-    maximumPoolSize = 20
-})
-
+// myDataSource is a javax.sql.DataSource managed by your framework or container
 val db = BlogClient.builder()
-    .dataSource(hikari)
+    .dataSource(myDataSource)
     .build()
 
-// Volan will not close hikari — manage its lifecycle yourself
+// Volan will not close myDataSource — manage its lifecycle yourself
 ```
 
 </CodeGroup>

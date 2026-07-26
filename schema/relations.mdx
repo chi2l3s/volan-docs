@@ -1,7 +1,7 @@
 ---
-title: "Defining Relations Between Models in Volan"
+title: "Defining Relations Between Volan Models: Complete Guide"
 sidebarTitle: "Relations"
-description: "Model one-to-one, one-to-many, many-to-many, and self-referential relations in Volan, configure referential actions, and understand the generated client API."
+description: "Model one-to-one, one-to-many, many-to-many, and self-referential relations in Volan, with referential actions and generated code."
 ---
 
 Relations in Volan are declared directly in the schema using relation fields — fields whose type is another model rather than a scalar. Volan uses these declarations to generate strongly-typed relation accessors on the client and to emit the correct foreign key constraints in migration SQL. This page covers every relation shape Volan supports and how each one translates into generated code.

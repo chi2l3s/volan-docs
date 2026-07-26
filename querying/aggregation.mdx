@@ -1,5 +1,5 @@
 ---
-title: "Aggregation and Group By in Volan"
+title: "Computing Aggregations and Group By Results in Volan"
 sidebarTitle: "Aggregation"
 description: "Compute counts, sums, averages, and extremes over your data with aggregate {}, and break results into groups with Volan's type-safe groupBy {} API."
 ---
@@ -29,9 +29,9 @@ val result = db.post.aggregate {
 | `sum { views }` | `result.sumOfViews` | `BigDecimal?` |
 | `average { views }` | `result.averageOfViews` | `Double?` |
 | `minimum { createdAt }` | `result.minimumOfCreatedAt` | `Instant?` |
-| `maximum { views }` | `result.maximumOfViews` | `BigDecimal?` |
+| `maximum { views }` | `result.maximumOfViews` | `Int?` |
 
-Properties for numeric fields (`sum`, `average`, `maximum`) return `BigDecimal?` or `Double?` because the result is `NULL` in SQL when there are no matching rows. Temporal fields follow the same nullable convention. `count` always returns a non-nullable `Long` (returning `0` when no rows match).
+`sum` always returns `BigDecimal?` and `average` always returns `Double?`, because the database widens these for precision. `minimum` and `maximum` return the field's own type as nullable (e.g. `Int?` for an `Int` field, `Instant?` for a `DateTime` field) because the result is `NULL` when no rows match. `count` always returns a non-nullable `Long` (returning `0` when no rows match).
 
 <Warning>
   Accessing a result property for a function you did not request throws `VolanAggregateNotAskedException`. For example, reading `result.sumOfViews` when you only called `count()` will fail at runtime. Always call every aggregate function whose result property you intend to read.
@@ -91,7 +91,7 @@ val groups = db.post.groupBy {
     by { authorId }
     count()
     sum { views }
-    having { count gt 5 }
+    having { count gt 5L }
     orderBy { count.desc() }
     take = 10
 }
@@ -121,7 +121,7 @@ db.post.groupBy {
     by { authorId }
     count()
     sum { views }
-    having { count gt 5 }          // only authors with more than 5 posts
+    having { count gt 5L }          // only authors with more than 5 posts
 }
 ```
 
@@ -129,8 +129,8 @@ You can combine multiple conditions in `having`:
 
 ```kotlin
 having {
-    count gte 3
-    sumOfViews gt 10000
+    count gte 3L
+    sumOfViews gt BigDecimal("10000")
 }
 ```
 
@@ -178,7 +178,7 @@ val topAuthors = db.post.groupBy {
     count()
     sum { views }
     average { views }
-    having { count gt 5 }
+    having { count gt 5L }
     orderBy { sumOfViews.desc() }
     take = 10
 }
@@ -199,7 +199,7 @@ val groups = db.post.groupBy {
     by { authorId }
     count()
     sum { views }
-    having { count gt 5 }
+    having { count gt 5L }
     orderBy { count.desc() }
     take = 10
 }
@@ -210,7 +210,7 @@ List<PostGroupResult> groups = db.post().groupBy(q -> q
     .by(b -> b.authorId())
     .count()
     .sum(f -> f.views())
-    .having(h -> h.count().gt(5))
+    .having(h -> h.count().gt(5L))
     .orderBy(PostGroupResult_.COUNT.desc())
     .take(10)
 );

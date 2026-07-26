@@ -1,5 +1,5 @@
 ---
-title: "Installing Volan: Modules, BOM, and Gradle Setup"
+title: "Installing Volan: Modules, BOM, and Gradle Build Setup"
 sidebarTitle: "Installation"
 description: "Full module reference for Volan: BOM usage, JDK requirements, Gradle configuration, and how to wire the code generator into your build."
 ---
@@ -107,10 +107,10 @@ val generateVolanClient by tasks.registering {
         val result = SchemaLoader.load(SourceFile("schema.volan", source))
         if (result.hasErrors) error(result.render())
 
-        // Delete stale generated files before writing
-        // (ensures models removed from the schema do not linger as orphan files)
+        // Delete stale generated files before writing new ones
         outputDir.get().asFile.deleteRecursively()
-        VolanGenerator.writeTo(result.schemaOrThrow(), outputDir.get().asFile.toPath())
+        val written = VolanGenerator.writeTo(result.schemaOrThrow(), outputDir.get().asFile.toPath())
+        written.forEach { println("generated $it") }
     }
 }
 

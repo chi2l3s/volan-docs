@@ -16,18 +16,18 @@ RuntimeException
     ├── VolanNotFoundException
     ├── VolanRelationNotLoadedException
     ├── VolanFieldNotSelectedException
+    ├── VolanAggregateNotAskedException
     ├── VolanConfigurationException
     ├── VolanUnsupportedException
+    ├── VolanUniqueConstraintException
+    ├── VolanForeignKeyException
     ├── VolanConstraintException
-    │   ├── VolanUniqueConstraintException
-    │   └── VolanForeignKeyException
     ├── VolanConnectionException
     ├── VolanTimeoutException
     ├── VolanTransactionException
     ├── VolanQueryException
     ├── VolanValidationException
     ├── VolanMappingException
-    ├── VolanAggregateNotAskedException
     ├── VolanSchemaException
     └── VolanGenerationException
 ```
@@ -79,11 +79,11 @@ Prefer `findUnique` (returns `null` on miss) when absence is a normal outcome, a
 
 ### VolanUniqueConstraintException
 
-Thrown when an `INSERT` or `UPDATE` violates a unique index in the database. The exception carries the constraint name so you can tell which field or composite index was violated.
+Thrown when an `INSERT` or `UPDATE` violates a unique index in the database. The exception carries the constraint name so you can tell which field or composite index was violated. The constraint name is `null` when the database driver does not report one.
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `constraint` | `String` | The database constraint name (e.g. `User_email_key`) |
+| `constraint` | `String?` | The database constraint name (e.g. `User_email_key`), or `null` if the driver did not report it |
 
 <CodeGroup>
 
@@ -122,13 +122,13 @@ Thrown when an operation violates a foreign key constraint — for example, inse
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `constraint` | `String` | The database constraint name |
+| `constraint` | `String?` | The database constraint name, or `null` if the driver did not report it |
 
 ---
 
 ### VolanConstraintException
 
-The base class for constraint violations. Catch this if you want to handle both `VolanUniqueConstraintException` and `VolanForeignKeyException` with a single handler.
+Thrown when a write breaks a check constraint or a not-null column that cannot be mapped to a more specific exception type. `VolanUniqueConstraintException` and `VolanForeignKeyException` are separate, peer exceptions — catch each by name, or catch `VolanException` at a broad boundary.
 
 ---
 

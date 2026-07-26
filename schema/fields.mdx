@@ -1,7 +1,7 @@
 ---
-title: "Scalar Fields and Types in Volan Schema"
+title: "Volan Schema Fields: Scalar Types and Field Attributes"
 sidebarTitle: "Fields"
-description: "Reference for all Volan scalar types, their Kotlin and Java mappings, field cardinality, and every field-level attribute including defaults and column hints."
+description: "Reference for all Volan scalar types, their Kotlin and Java mappings, field cardinality, and every field-level attribute you can apply."
 ---
 
 Fields are the building blocks of a Volan model. Each field declaration names a column in the underlying table, assigns it a scalar type, and optionally attaches attributes that control behaviour such as primary keys, default values, and column naming. This page covers every scalar type Volan supports and all field-level attributes you can apply.
@@ -166,7 +166,7 @@ model User {
   score     Decimal  @default(0) @db.Decimal(10, 2)
   metadata  Json?
   avatar    Bytes?
-  publicId  Uuid     @unique @default(now())
+  publicId  Uuid     @unique @default(uuid())
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
 }

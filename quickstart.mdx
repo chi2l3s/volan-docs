@@ -1,5 +1,5 @@
 ---
-title: "Get Started with Volan in Your JVM Project"
+title: "Get Started with Volan in 5 Minutes (JVM / Gradle)"
 sidebarTitle: "Quickstart"
 description: "Add Volan to a Gradle project, write a schema, run the code generator, and execute your first type-safe query against PostgreSQL in minutes."
 ---
@@ -64,7 +64,8 @@ This guide walks you through adding Volan to an existing Gradle project, writing
             val result = SchemaLoader.load(SourceFile("schema.volan", source))
             if (result.hasErrors) error(result.render())
             outputDir.get().asFile.deleteRecursively()
-            VolanGenerator.writeTo(result.schemaOrThrow(), outputDir.get().asFile.toPath())
+            val written = VolanGenerator.writeTo(result.schemaOrThrow(), outputDir.get().asFile.toPath())
+            written.forEach { println("generated $it") }
         }
     }
 

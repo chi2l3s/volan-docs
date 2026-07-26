@@ -115,22 +115,22 @@ This strict behaviour prevents accidental lazy loading and keeps your query coun
 
 ### Checking whether a relation is loaded
 
-Use `isRelationLoaded` to check before accessing:
+Every relation has a generated `is<Relation>Loaded` boolean property you can check before accessing it:
 
 ```kotlin
-if (user.isRelationLoaded(User::posts)) {
+if (user.isPostsLoaded) {
     render(user.posts)
 } else {
     renderPlaceholder()
 }
 ```
 
-### `relationIfLoaded`
+### `<relation>IfLoaded`
 
-`relationIfLoaded` returns the relation value if it was included, or `null` otherwise — without throwing:
+Every relation also has a generated `<relation>IfLoaded` property that returns the loaded value or `null` without throwing:
 
 ```kotlin
-val posts = user.relationIfLoaded(User::posts)  // List<Post>? — null if not loaded
+val posts = user.postsIfLoaded  // List<Post>? — null if not loaded
 ```
 
 This is useful in shared model-to-DTO mapping code where the same object type may or may not have its relations populated depending on the call site.
@@ -183,7 +183,7 @@ db.post.findMany {
   Volan uses `matches` / `notMatches` rather than `is` / `isNot` because `is` is a reserved keyword in Kotlin.
 </Note>
 
-These relation filters generate efficient `EXISTS` / `NOT EXISTS` sub-queries and do not load the related records into memory.
+These relation filters do not load the related records into memory — only the parent rows are returned.
 
 ## Java equivalent
 

@@ -8,33 +8,21 @@ Volan's write API gives you a type-safe, schema-driven way to insert data into y
 
 ## Creating a single record
 
-Use `db.<model>.create {}` to insert one row and return the fully-populated entity. The `data {}` block is where you set field values. Every field you declare in the schema is available here as a typed property, so the compiler catches typos and type mismatches at build time.
+Use `db.<model>.create {}` to insert one row and return the fully-populated entity. You set field values directly inside the `create {}` block as typed property assignments. Every field declared in your schema is available as a typed property, so the compiler catches typos and type mismatches at build time.
 
-<CodeGroup>
-```kotlin Kotlin
+```kotlin
 val user = db.user.create {
-    data {
-        email = "alice@acme.com"
-        name = "Alice"
-        role = Role.USER
-    }
+    email = "alice@acme.com"
+    name = "Alice"
+    role = Role.USER
 }
 ```
-
-```java Java
-User user = db.user().create(d -> d.data(data -> data
-    .email("alice@acme.com")
-    .name("Alice")
-    .role(Role.USER)
-));
-```
-</CodeGroup>
 
 The returned `user` object contains every field on the model, including those you did not supply yourself.
 
 ### What Volan fills in automatically
 
-Fields annotated with `@id`, `@default`, or `@updatedAt` in your schema are handled by Volan or the database — you never set them manually inside `data {}`.
+Fields annotated with `@id`, `@default`, or `@updatedAt` in your schema are handled by Volan or the database — you never set them manually inside `create {}`.
 
 | Annotation | Behaviour |
 |---|---|
@@ -43,7 +31,7 @@ Fields annotated with `@id`, `@default`, or `@updatedAt` in your schema are hand
 | `@updatedAt` | Volan injects the current timestamp automatically on every write. |
 
 <Note>
-  Attempting to assign a value to an `@id` or `@default` field inside `data {}` will produce a compile-time error — Volan's generated DSL omits those setters intentionally.
+  Attempting to assign a value to an `@id` or `@default` field inside `create {}` will produce a compile-time error — Volan's generated DSL omits those setters intentionally.
 </Note>
 
 ### Required vs optional fields
@@ -53,10 +41,8 @@ A field is **required** in `create` when it has no `@default`, is not nullable, 
 ```kotlin
 // Missing `email` — throws VolanValidationException immediately
 val user = db.user.create {
-    data {
-        name = "Alice"
-        // email is required but absent
-    }
+    name = "Alice"
+    // email is required but absent
 }
 ```
 
@@ -66,11 +52,15 @@ val user = db.user.create {
 
 Optional fields (nullable or carrying a `@default`) can be omitted freely — Volan sends `NULL` or the declared default value for them.
 
+### Unique constraint violations
+
+If the values you supply would break a unique index (for example, inserting a duplicate email address), Volan throws `VolanUniqueConstraintException`. The exception carries the name of the violated constraint when the database provides it.
+
 ---
 
 ## Creating many records at once
 
-`createMany {}` inserts multiple rows in a single statement and returns the number of rows inserted as a `Long`. Each row is defined with a `row {}` block that follows the same typing rules as `data {}` in a regular `create`.
+`createMany {}` inserts multiple rows in a single statement and returns the number of rows inserted as a `Long`. Each row is defined with a `row {}` block that follows the same typing rules as a regular `create`.
 
 ```kotlin
 val count = db.user.createMany {
@@ -105,7 +95,7 @@ val count = db.user.createMany {
 
 <CardGroup cols={2}>
   <Card title="create {}" icon="plus">
-    Inserts one row. Returns the full entity with all fields, including generated ones. Throws `VolanValidationException` if required fields are missing.
+    Inserts one row. Returns the full entity with all fields, including generated ones. Throws `VolanValidationException` if required fields are missing, or `VolanUniqueConstraintException` on a duplicate key.
   </Card>
   <Card title="createMany {}" icon="list-plus">
     Inserts many rows in one statement. Returns a `Long` row count. Does not support nested writes.

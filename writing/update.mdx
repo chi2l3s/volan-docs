@@ -10,8 +10,7 @@ Volan's update operations let you change specific fields on existing rows withou
 
 Use `db.<model>.update {}` to modify one row and return the updated entity. The call requires two blocks: a `where {}` filter that identifies the target row, and a `data {}` block containing only the fields you want to change.
 
-<CodeGroup>
-```kotlin Kotlin
+```kotlin
 val user = db.user.update {
     where { id eq 42 }
     data {
@@ -19,14 +18,6 @@ val user = db.user.update {
     }
 }
 ```
-
-```java Java
-User user = db.user().update(u -> u
-    .where(w -> w.id().eq(42))
-    .data(d -> d.name("Alice Updated"))
-);
-```
-</CodeGroup>
 
 The returned `user` reflects the row's state after the update, including any fields that were already set and any `@updatedAt` timestamps injected by Volan.
 
@@ -57,8 +48,12 @@ Fields annotated with `@updatedAt` in your schema are updated automatically by V
 If the `where {}` filter matches no row, `update` throws `VolanNotFoundException`. This prevents silent no-ops from going undetected in your application logic.
 
 <Warning>
-  Always handle `VolanNotFoundException` in code paths where a record's existence is not guaranteed. If you want a create-or-update semantic, use [`upsert`](/writing/create#upsert) instead.
+  Always handle `VolanNotFoundException` in code paths where a record's existence is not guaranteed. If you want a create-or-update semantic, use the `upsert` method instead (see [Creating Records](/writing/create)).
 </Warning>
+
+### Unique constraint violations
+
+If the updated values would break a unique index, Volan throws `VolanUniqueConstraintException`. The exception carries the name of the violated constraint when the database provides it.
 
 ---
 
@@ -92,7 +87,7 @@ The `where {}` block in `updateMany` supports the same filter operators as `find
 
 <CardGroup cols={2}>
   <Card title="update {}" icon="pencil">
-    Updates one row matched by `where {}`. Returns the full updated entity. Throws `VolanNotFoundException` if no row is found. Only the fields you set in `data {}` are changed.
+    Updates one row matched by `where {}`. Returns the full updated entity. Throws `VolanNotFoundException` if no row is found, or `VolanUniqueConstraintException` on a duplicate key. Only the fields you set in `data {}` are changed.
   </Card>
   <Card title="updateMany {}" icon="pencil-line">
     Updates all rows matched by `where {}`. Returns a `Long` row count. `@updatedAt` fields are injected automatically.
