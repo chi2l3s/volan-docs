@@ -1,0 +1,173 @@
+---
+title: "Поля схемы Volan: скалярные типы и атрибуты полей"
+sidebarTitle: "Поля"
+description: "Справочник по всем скалярным типам Volan, их соответствиям в Kotlin и Java, кардинальности полей и всем атрибутам уровня поля."
+---
+
+Поля — это строительные блоки модели Volan. Каждое объявление поля задаёт имя колонки в соответствующей таблице, присваивает ей скалярный тип и при желании добавляет атрибуты, управляющие поведением — первичными ключами, значениями по умолчанию, именами колонок. На этой странице описаны все скалярные типы Volan и все атрибуты уровня поля.
+
+## Скалярные типы
+
+Volan предоставляет фиксированный набор скалярных типов, которые предсказуемо отображаются в типы Kotlin и Java в сгенерированном клиенте.
+
+| Тип Volan | Тип Kotlin | Тип Java | Примечания |
+| --- | --- | --- | --- |
+| `String` | `String` | `String` | Текст переменной длины |
+| `Int` | `Int` | `int` | 32-битное целое со знаком |
+| `Long` | `Long` | `long` | 64-битное целое со знаком |
+| `Float` | `Float` | `float` | Одинарная точность IEEE 754 |
+| `Double` | `Double` | `double` | Двойная точность IEEE 754 |
+| `Decimal` | `java.math.BigDecimal` | `BigDecimal` | Десятичное число произвольной точности |
+| `Boolean` | `Boolean` | `boolean` | `true` / `false` |
+| `DateTime` | `java.time.Instant` | `Instant` | Метка времени с часовым поясом |
+| `Date` | `java.time.LocalDate` | `LocalDate` | Только дата, без времени |
+| `Time` | `java.time.LocalTime` | `LocalTime` | Только время, без даты |
+| `Json` | `volan.Json` | `Json` | JSON-значение; исходная строка доступна через `.raw` |
+| `Bytes` | `ByteArray` | `byte[]` | Бинарные данные |
+| `Uuid` | `java.util.UUID` | `UUID` | UUID, хранимый как `uuid` или `char(36)` |
+
+### Поля Json
+
+Тип `Json` хранит произвольный JSON в текстовой колонке или в `jsonb`. В сгенерированном коде Volan оборачивает значение в объект `Json`, который даёт доступ к исходной строке:
+
+```kotlin
+val payload: Json = post.metadata
+println(payload.raw) // например, {"key":"value"}
+```
+
+Сериализация и десериализация содержимого — ваша ответственность; Volan не разбирает JSON.
+
+## Кардинальность полей
+
+Добавьте `?`, чтобы сделать поле nullable, или `[]`, чтобы сделать его списком (колонкой-массивом):
+
+```prisma
+model Document {
+  id       Int      @id @default(autoincrement())
+  title    String           // обязательное
+  summary  String?          // опциональное — тип Kotlin: String?
+  keywords String[]         // список — тип Kotlin: List<String>
+}
+```
+
+## Атрибуты уровня поля
+
+Атрибуты записываются после типа с префиксом `@`. Несколько атрибутов разделяются пробелами.
+
+### `@id`
+
+Помечает поле как первичный ключ. У каждой модели должно быть ровно одно поле с `@id` либо один блочный атрибут `@@id`.
+
+```prisma
+model Product {
+  id Int @id @default(autoincrement())
+}
+```
+
+### `@default(value)`
+
+Задаёт значение по умолчанию, если при вставке значение не передано. Volan поддерживает следующие выражения по умолчанию:
+
+| Выражение | Значение |
+| --- | --- |
+| `autoincrement()` | Последовательность автоинкремента в базе (целочисленные первичные ключи) |
+| `now()` | Текущая метка времени на момент вставки |
+| Литерал | `@default(0)`, `@default("")`, `@default(true)` |
+| Значение перечисления | `@default(USER)` — должно совпадать со значением в указанном enum |
+
+```prisma
+model Order {
+  id        Int      @id @default(autoincrement())
+  total     Decimal  @default(0)
+  status    Status   @default(PENDING)
+  createdAt DateTime @default(now())
+}
+```
+
+### `@unique`
+
+Создаёт уникальное ограничение на этом поле. Для каждого поля с `@unique` Volan также генерирует вспомогательный метод `findByFieldName` в клиенте.
+
+```prisma
+model User {
+  id    Int    @id @default(autoincrement())
+  email String @unique
+}
+```
+
+### `@updatedAt`
+
+Автоматически обновляет это поле текущей меткой времени при каждом обновлении строки. Поле должно иметь тип `DateTime`.
+
+```prisma
+model Post {
+  id        Int      @id @default(autoincrement())
+  updatedAt DateTime @updatedAt
+}
+```
+
+<Note>
+  `@updatedAt` обрабатывается на уровне клиента Volan, а не в базе данных. Сгенерированный код подставляет текущий `Instant` в каждый запрос `UPDATE` для этого поля.
+</Note>
+
+### `@map("column_name")`
+
+Сопоставляет поле с колонкой базы данных, имя которой отличается от имени поля. Имя поля в сгенерированном коде Kotlin остаётся прежним.
+
+```prisma
+model User {
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+}
+```
+
+### `@ignore`
+
+Исключает поле из сгенерированного клиента. Колонка продолжает существовать в базе, но Volan не будет ни читать её, ни писать в неё.
+
+```prisma
+model User {
+  id           Int    @id @default(autoincrement())
+  passwordHash String @ignore
+}
+```
+
+### `@db.*` — подсказки типов для конкретного провайдера
+
+Используйте пространство имён `@db`, чтобы передать движку миграций подсказку о типе, специфичную для провайдера. Это позволяет управлять точным типом колонки в DDL, не влияя на тип в Kotlin.
+
+```prisma
+model User {
+  email String @db.VarChar(320)
+  bio   String @db.Text
+}
+```
+
+```prisma
+model Metric {
+  value Decimal @db.Decimal(18, 6)
+}
+```
+
+Доступные подсказки зависят от провайдера. Проверка, специфичная для диалекта, выполняется на этапе миграции. Если подсказка недопустима для активного провайдера, возникает ошибка валидации.
+
+<Tip>
+  На одном поле можно сочетать несколько атрибутов. Для читаемости пишите их в порядке `@id`, `@default`, `@unique`, `@db.*`, `@map` — Volan не требует определённого порядка, но форматтер его нормализует.
+</Tip>
+
+## Собираем всё вместе
+
+```prisma
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique @db.VarChar(320)
+  name      String?
+  bio       String?  @db.Text
+  score     Decimal  @default(0) @db.Decimal(10, 2)
+  metadata  Json?
+  avatar    Bytes?
+  publicId  Uuid     @unique @default(uuid())
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+}
+```

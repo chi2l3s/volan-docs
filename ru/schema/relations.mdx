@@ -1,0 +1,188 @@
+---
+title: "Связи между моделями Volan: полное руководство"
+sidebarTitle: "Связи"
+description: "Описывайте связи один-к-одному, один-ко-многим, многие-ко-многим и самоссылочные связи в Volan — с референциальными действиями и сгенерированным кодом."
+---
+
+Связи в Volan объявляются прямо в схеме через поля связей — поля, типом которых является другая модель, а не скаляр. На основе этих объявлений Volan генерирует строго типизированные аксессоры связей в клиенте и выпускает корректные ограничения внешних ключей в SQL миграций. На этой странице разобраны все виды связей, которые поддерживает Volan, и то, как каждый из них превращается в сгенерированный код.
+
+## Атрибут `@relation`
+
+Атрибут `@relation` сообщает Volan, как соединить две модели. Он ставится на той стороне связи, которая держит внешний ключ.
+
+```prisma
+@relation(fields: [authorId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+```
+
+| Параметр | Описание |
+| --- | --- |
+| `fields` | Поле (или поля) внешнего ключа в этой модели |
+| `references` | Поле (или поля) в целевой модели, на которые указывает внешний ключ |
+| `onDelete` | Действие при удалении целевой строки |
+| `onUpdate` | Действие при обновлении ключа целевой строки |
+
+## Один-ко-многим
+
+Связь один-ко-многим соединяет одну запись родительской модели с произвольным числом записей дочерней. Дочерняя модель держит внешний ключ, родительская — списочное поле.
+
+```prisma
+model User {
+  id    Int    @id @default(autoincrement())
+  posts Post[]
+}
+
+model Post {
+  id       Int  @id @default(autoincrement())
+  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  authorId Int
+}
+```
+
+В сгенерированном коде Kotlin:
+
+- у `User` появляется слот связи `posts: List<Post>` (по умолчанию ленивый);
+- у `Post` — слот связи `author: User` и скалярное поле `authorId: Int`.
+
+## Один-к-одному
+
+Связь один-к-одному соединяет одну запись одной модели с одной записью другой. Сторона, держащая внешний ключ, обязана пометить его как `@unique`.
+
+```prisma
+model User {
+  id      Int      @id @default(autoincrement())
+  profile Profile?
+}
+
+model Profile {
+  id     Int  @id @default(autoincrement())
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId Int  @unique
+}
+```
+
+`Profile.userId` несёт `@unique`, чтобы ограничение один-к-одному действовало на уровне базы данных. Поле `User.profile` опционально (`Profile?`), потому что у пользователя может ещё не быть профиля.
+
+## Многие-ко-многим (неявная связующая таблица)
+
+Если обе стороны связи — списочные поля, Volan считает её связью многие-ко-многим и автоматически управляет связующей таблицей. Дайте связи одинаковое имя на обеих сторонах, передав строковый литерал в `@relation`.
+
+```prisma
+model Post {
+  id   Int    @id @default(autoincrement())
+  tags Tag[]  @relation("PostTags")
+}
+
+model Tag {
+  id    Int    @id @default(autoincrement())
+  posts Post[] @relation("PostTags")
+}
+```
+
+Volan создаёт связующую таблицу `_PostTags` с колонками `postId` и `tagId`. Объявлять эту таблицу в схеме не нужно — ею полностью владеет Volan.
+
+<Note>
+  Если на связи нужно хранить дополнительные данные (например, метку `createdAt`), создайте явную связующую модель с двумя связями один-ко-многим вместо неявной формы многие-ко-многим.
+</Note>
+
+## Самоссылочные связи
+
+Модель может ссылаться сама на себя. Это типично для иерархических данных — организационных структур или веток комментариев. Дайте связи имя, чтобы различать две стороны.
+
+```prisma
+model User {
+  id        Int    @id @default(autoincrement())
+  manager   User?  @relation("Reports", fields: [managerId], references: [id], onDelete: SetNull)
+  managerId Int?
+  reports   User[] @relation("Reports")
+}
+```
+
+Здесь `manager` — сторона «принадлежит», а `reports` — сторона «имеет много». Обе используют имя связи `"Reports"`, чтобы Volan понимал, что они образуют пару.
+
+## Референциальные действия
+
+Референциальные действия определяют, что происходит с дочерними строками при удалении или обновлении родительской.
+
+| Действие | Поведение |
+| --- | --- |
+| `Cascade` | Автоматически удаляет или обновляет дочерние строки |
+| `SetNull` | Устанавливает колонку внешнего ключа в `NULL` (поле должно быть опциональным) |
+| `Restrict` | Запрещает удаление или обновление, если есть дочерние строки |
+| `NoAction` | Оставляет поведение на усмотрение базы данных |
+
+```prisma
+model Post {
+  id       Int  @id @default(autoincrement())
+  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  authorId Int
+}
+```
+
+<Warning>
+  Для `SetNull` поле внешнего ключа должно быть объявлено как опциональное (`Int?`). Если сочетать `SetNull` с обязательным (non-nullable) полем внешнего ключа, Volan сообщит об ошибке валидации.
+</Warning>
+
+## Связи в сгенерированном клиенте
+
+### Слоты связей
+
+Поля связей доступны как _слоты связей_ в сгенерированных классах моделей. Слот связи не загружается, пока вы явно не включите его в запрос через `include`:
+
+```kotlin
+val user = client.user.findById(1) {
+    include { posts() }
+}
+println(user.posts) // List<Post>
+```
+
+Если обратиться к слоту связи, который не был включён в запрос, Volan бросает `VolanRelationNotLoadedException` с сообщением, указывающим модель и поле:
+
+```text
+VolanRelationNotLoadedException: Relation 'posts' on model 'User' was not loaded.
+Use include { posts() } in your query to load it.
+```
+
+### Скалярные поля внешних ключей
+
+Скалярное поле внешнего ключа (например, `authorId`) всегда загружается вместе с моделью. Его можно читать без `include`.
+
+```kotlin
+val post = client.post.findById(42)
+println(post.authorId) // всегда доступно
+println(post.author)   // бросает VolanRelationNotLoadedException, если не включёно
+```
+
+<Tip>
+  Для операций записи задавайте скалярное поле внешнего ключа напрямую (`authorId = userId`), а не вкладывайте целый объект. Вложенную запись оставьте для случаев, когда нужно создать или привязать связанные записи в одной транзакции.
+</Tip>
+
+## Полный пример
+
+```prisma
+model User {
+  id        Int       @id @default(autoincrement())
+  posts     Post[]
+  profile   Profile?
+  manager   User?     @relation("Reports", fields: [managerId], references: [id], onDelete: SetNull)
+  managerId Int?
+  reports   User[]    @relation("Reports")
+}
+
+model Post {
+  id       Int    @id @default(autoincrement())
+  author   User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  authorId Int
+  tags     Tag[]  @relation("PostTags")
+}
+
+model Profile {
+  id     Int  @id @default(autoincrement())
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId Int  @unique
+}
+
+model Tag {
+  id    Int    @id @default(autoincrement())
+  posts Post[] @relation("PostTags")
+}
+```

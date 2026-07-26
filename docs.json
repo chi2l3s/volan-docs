@@ -101,7 +101,11 @@
                 "group": "Схема",
                 "pages": [
                   "ru/schema/overview",
-                  "ru/schema/models"
+                  "ru/schema/models",
+                  "ru/schema/fields",
+                  "ru/schema/relations",
+                  "ru/schema/attributes",
+                  "ru/schema/enums"
                 ]
               },
               {
