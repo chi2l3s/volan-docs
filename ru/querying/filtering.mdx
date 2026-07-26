@@ -1,0 +1,273 @@
+---
+title: "Фильтрация запросов в Volan: операторы и комбинаторы"
+sidebarTitle: "Фильтрация"
+description: "Освойте все операторы фильтрации Volan — от текстового сопоставления и диапазонов до логических комбинаторов и подфильтров по связям."
+---
+
+Фильтры в Volan выражаются внутри блока `where { }`, доступного на каждом методе чтения — `findMany`, `findFirst`, `findUnique`, `count`, `exists`, `aggregate` и `groupBy`. Блок типобезопасен: доступны только те операторы, которые допустимы для типа поля, а компилятор отвергает всё остальное.
+
+## Операторы текстовых полей (`String`)
+
+Строковые поля предоставляют следующие операторы:
+
+| Оператор | Описание |
+| --- | --- |
+| `eq` | Точное совпадение |
+| `notEq` | Не равно |
+| `oneOf` | Значение входит в переданный список |
+| `notOneOf` | Значение не входит в переданный список |
+| `isNull` | Поле равно `NULL` |
+| `isNotNull` | Поле не равно `NULL` |
+| `contains` | Совпадение подстроки (`LIKE '%value%'`) |
+| `startsWith` | Совпадение по префиксу (`LIKE 'value%'`) |
+| `endsWith` | Совпадение по суффиксу (`LIKE '%value'`) |
+
+У каждого текстового оператора есть вариант `.ignoringCase()`, выполняющий сравнение без учёта регистра.
+
+```kotlin
+db.user.findMany {
+    where {
+        email endsWith "@acme.com"
+        name.ignoringCase() contains "alice"
+        username.ignoringCase() startsWith "admin"
+    }
+}
+```
+
+<Note>
+  Volan использует `oneOf` и `notOneOf` вместо `in` и `notIn`, потому что `in` — зарезервированное ключевое слово в Kotlin. В сгенерированном SQL по-прежнему используется `IN (?, ?, ...)`.
+</Note>
+
+```kotlin
+// Совпадение с несколькими доменами email сразу
+db.user.findMany {
+    where {
+        email oneOf listOf("alice@acme.com", "bob@acme.com")
+    }
+}
+
+// Исключаем заблокированных пользователей по статусу
+db.user.findMany {
+    where {
+        status notOneOf listOf("SUSPENDED", "BANNED")
+    }
+}
+```
+
+## Операторы упорядоченных полей (`Int`, `Long`, `Float`, `Double`, `Decimal`, `DateTime`, `Date`, `Time`, `Uuid`)
+
+Числовые и временные поля поддерживают сравнения по диапазону в дополнение к операторам равенства:
+
+| Оператор | Описание |
+| --- | --- |
+| `eq` | Равно |
+| `notEq` | Не равно |
+| `gt` | Больше |
+| `gte` | Больше или равно |
+| `lt` | Меньше |
+| `lte` | Меньше или равно |
+| `between` | Включающий диапазон (`BETWEEN ? AND ?`) |
+| `oneOf` | Значение входит в переданный список |
+| `notOneOf` | Значение не входит в переданный список |
+| `isNull` | Поле равно `NULL` |
+| `isNotNull` | Поле не равно `NULL` |
+
+```kotlin
+db.post.findMany {
+    where {
+        views gte 1000
+        createdAt.between(thirtyDaysAgo, now)
+        score lt 4.5
+    }
+}
+```
+
+## Операторы полей-перечислений
+
+Поля-перечисления поддерживают `eq`, `notEq`, `oneOf`, `notOneOf`, `isNull` и `isNotNull`.
+
+```kotlin
+db.user.findMany {
+    where {
+        role eq Role.ADMIN
+    }
+}
+
+db.user.findMany {
+    where {
+        role oneOf listOf(Role.ADMIN, Role.MODERATOR)
+    }
+}
+```
+
+## Операторы булевых полей
+
+Булевы поля поддерживают `eq`, `notEq`, `isNull` и `isNotNull`.
+
+```kotlin
+db.post.findMany {
+    where {
+        draft eq false
+        featured eq true
+    }
+}
+```
+
+## Логические комбинаторы
+
+По умолчанию все условия внутри `where { }` объединяются оператором `AND`. Используйте явные комбинаторы, когда нужна более сложная логика.
+
+### `and { }`
+
+Группирует условия через `AND`. Полезно для читаемости или для вложенности внутрь блока `or`.
+
+```kotlin
+db.user.findMany {
+    where {
+        and {
+            role eq Role.ADMIN
+            createdAt gte oneYearAgo
+        }
+    }
+}
+```
+
+### `or { }`
+
+Должно быть истинно хотя бы одно из вложенных условий.
+
+```kotlin
+db.user.findMany {
+    where {
+        or {
+            role eq Role.ADMIN
+            role eq Role.MODERATOR
+        }
+    }
+}
+```
+
+### `not { }`
+
+Отрицает весь вложенный блок.
+
+```kotlin
+db.user.findMany {
+    where {
+        not {
+            status eq "SUSPENDED"
+        }
+    }
+}
+```
+
+### Сочетание комбинаторов
+
+Комбинаторы свободно вкладываются друг в друга, так что можно выразить любое булево выражение:
+
+```kotlin
+db.user.findMany {
+    where {
+        or {
+            and {
+                role eq Role.ADMIN
+                createdAt gte oneYearAgo
+            }
+            and {
+                role eq Role.MODERATOR
+                postCount gte 100
+            }
+        }
+        not {
+            email isNull()
+        }
+    }
+}
+```
+
+## Фильтры по связям
+
+Можно фильтровать записи по состоянию связанных моделей, не выписывая JOIN вручную. Фильтры по связям доступны внутри `where { }` по имени поля-связи.
+
+### `some { }` — хотя бы одна связанная запись подходит
+
+```kotlin
+// Посты, у которых есть хотя бы один тег с именем "kotlin"
+db.post.findMany {
+    where {
+        tags { some { name eq "kotlin" } }
+    }
+}
+```
+
+### `none { }` — нет ни одной подходящей связанной записи
+
+```kotlin
+// Пользователи без черновых постов
+db.user.findMany {
+    where {
+        posts { none { draft eq true } }
+    }
+}
+```
+
+### `every { }` — все связанные записи подходят
+
+```kotlin
+// Пользователи, у которых все посты опубликованы
+db.user.findMany {
+    where {
+        posts { every { draft eq false } }
+    }
+}
+```
+
+### `matches { }` и `notMatches { }` — для связей «к одному»
+
+Используйте `matches` и `notMatches` на связях «многие-к-одному» или «один-к-одному» (где связь ведёт к одной записи, а не к списку).
+
+```kotlin
+// Посты, написанные администратором
+db.post.findMany {
+    where {
+        author { matches { role eq Role.ADMIN } }
+    }
+}
+
+// Посты, НЕ написанные заблокированным пользователем
+db.post.findMany {
+    where {
+        author { notMatches { status eq "SUSPENDED" } }
+    }
+}
+```
+
+<Note>
+  Volan использует `matches` / `notMatches` вместо `is` / `isNot`, потому что `is` — зарезервированное ключевое слово в Kotlin.
+</Note>
+
+## Эквивалент на Java
+
+Тот же API фильтрации доступен и в Java через цепочки лямбд:
+
+```java
+List<Post> posts = db.post().findMany(q -> q
+    .where(w -> w
+        .views().gte(1000)
+        .draft().eq(false)
+        .tags().some(t -> t.name().eq("kotlin"))
+    )
+);
+```
+
+## Что читать дальше
+
+<CardGroup cols={2}>
+  <Card title="Сортировка и пагинация" icon="arrow-down-wide-short" href="/ru/querying/ordering-pagination">
+    Сортируйте отфильтрованные результаты и перемещайтесь по ним с помощью пагинации по смещению или курсору.
+  </Card>
+
+  <Card title="Связи" icon="diagram-project" href="/ru/querying/relations">
+    Подключайте связанные модели к результатам основного запроса.
+  </Card>
+</CardGroup>

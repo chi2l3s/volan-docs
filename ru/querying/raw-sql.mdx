@@ -1,0 +1,189 @@
+---
+title: "Выполнение сырых SQL-запросов и DML-команд в Volan"
+sidebarTitle: "Сырой SQL"
+description: "Запускайте написанный вручную SQL, когда построителя запроса недостаточно, с полной параметризацией, типизированным API Row и безопасным выполнением DML-команд."
+---
+
+Построитель запросов Volan покрывает подавляющее большинство повседневных операций с базой, но некоторые задачи — сложная аналитика, специфичные для СУБД функции, рекурсивные CTE или массовые операции — проще выразить непосредственно в SQL. Для них Volan предоставляет два «аварийных выхода»: `rawQuery` для команд `SELECT`, возвращающих строки, и `rawExecute` для команд `INSERT`, `UPDATE`, `DELETE` и DDL, возвращающих количество затронутых строк.
+
+Оба метода доступны прямо на клиенте `db` и полностью интегрированы с пулом соединений и транзакциями Volan.
+
+## `rawQuery`
+
+`rawQuery` выполняет `SELECT` и отображает каждую строку в значение по вашему выбору через лямбду. Возвращает `List<T>`, где `T` — то, что возвращает ваша лямбда.
+
+```kotlin
+val emails = db.rawQuery(
+    sql = "SELECT id, email FROM users WHERE email LIKE ?",
+    parameters = listOf("%@acme.com")
+) { row ->
+    row.getString("email")
+}
+// emails: List<String>
+```
+
+Лямбда получает объект `Row`. Вы вызываете на нём типизированные методы-аксессоры для чтения отдельных колонок — Volan самостоятельно преобразует типы JDBC.
+
+### Маппинг в data-класс
+
+Каждую строку можно отобразить в data-класс или любой другой тип:
+
+```kotlin
+data class UserSummary(val id: Int, val email: String)
+
+val summaries = db.rawQuery(
+    sql = "SELECT id, email FROM users ORDER BY created_at DESC LIMIT ?",
+    parameters = listOf(100)
+) { row ->
+    UserSummary(
+        id = row.getInt("id"),
+        email = row.getString("email")
+    )
+}
+// summaries: List<UserSummary>
+```
+
+### Сложные запросы
+
+```kotlin
+val stats = db.rawQuery(
+    sql = """
+        SELECT u.id, u.name, COUNT(p.id) AS post_count, SUM(p.views) AS total_views
+        FROM users u
+        LEFT JOIN posts p ON p.author_id = u.id AND p.draft = false
+        WHERE u.created_at >= ?
+        GROUP BY u.id, u.name
+        HAVING COUNT(p.id) > ?
+        ORDER BY total_views DESC
+    """.trimIndent(),
+    parameters = listOf(oneYearAgo, 0)
+) { row ->
+    mapOf(
+        "name" to row.getString("name"),
+        "posts" to row.getLong("post_count"),
+        "views" to row.getDecimalOrNull("total_views")
+    )
+}
+```
+
+## `rawExecute`
+
+`rawExecute` выполняет команду, которая не возвращает строки, и возвращает количество затронутых строк как `Long`.
+
+```kotlin
+val affected = db.rawExecute(
+    sql = "UPDATE users SET role = ? WHERE id = ?",
+    parameters = listOf("ADMIN", 42)
+)
+println("Обновлено строк: $affected")
+```
+
+```kotlin
+// Массовое мягкое удаление
+val deleted = db.rawExecute(
+    sql = "UPDATE posts SET deleted_at = NOW() WHERE author_id = ? AND draft = true",
+    parameters = listOf(userId)
+)
+```
+
+## Защита от SQL-инъекций
+
+Все параметры передаются через плейсхолдеры `?` и привязываются драйвером JDBC. **Никогда не вставляйте ввод пользователя непосредственно в строку SQL.** Volan не выполняет дополнительной санитации — гарантия безопасности целиком обеспечивается параметризованными привязками.
+
+<Warning>
+  Следующий паттерн опасен и никогда не должен использоваться:
+
+  ```kotlin
+  // ❌ НЕ ДЕЛАЙТЕ ТАК
+  db.rawExecute("DELETE FROM users WHERE email = '$userInput'", emptyList())
+  ```
+
+  Всегда используйте список `parameters`:
+
+  ```kotlin
+  // ✅ Безопасно — ввод привязывается как параметр
+  db.rawExecute("DELETE FROM users WHERE email = ?", listOf(userInput))
+  ```
+</Warning>
+
+## API аксессоров `Row`
+
+Объект `Row`, передаваемый в лямбду `rawQuery`, предоставляет типизированные геттеры для каждого поддерживаемого типа колонки. У каждого метода есть non-null-вариант, бросающий исключение при `NULL`, и вариант `OrNull`, возвращающий `null`.
+
+| Тип колонки | Non-null аксессор | Nullable аксессор |
+| --- | --- | --- |
+| `String` | `getString(column)` | `getStringOrNull(column)` |
+| `Int` | `getInt(column)` | `getIntOrNull(column)` |
+| `Long` | `getLong(column)` | `getLongOrNull(column)` |
+| `Float` | `getFloat(column)` | `getFloatOrNull(column)` |
+| `Double` | `getDouble(column)` | `getDoubleOrNull(column)` |
+| `BigDecimal` | `getDecimal(column)` | `getDecimalOrNull(column)` |
+| `Boolean` | `getBoolean(column)` | `getBooleanOrNull(column)` |
+| `Instant` | `getInstant(column)` | `getInstantOrNull(column)` |
+| `LocalDate` | `getLocalDate(column)` | `getLocalDateOrNull(column)` |
+| `LocalTime` | `getLocalTime(column)` | `getLocalTimeOrNull(column)` |
+| `UUID` | `getUuid(column)` | `getUuidOrNull(column)` |
+| `ByteArray` | `getBytes(column)` | `getBytesOrNull(column)` |
+| `Json` | `getJson(column)` | `getJsonOrNull(column)` |
+
+Параметр `column` — это всегда **псевдоним колонки в итоговом наборе**: либо физическое имя колонки, либо псевдоним, объявленный через `AS` в SQL.
+
+```kotlin
+db.rawQuery(
+    sql = "SELECT created_at AS ts, score::float AS normalized_score FROM posts LIMIT ?",
+    parameters = listOf(10)
+) { row ->
+    row.getInstant("ts") to row.getFloatOrNull("normalized_score")
+}
+```
+
+<Note>
+  `getJson` возвращает обёртку `Json` — тонкий тип Volan, который хранит сырой JSON-текст так, как его хранит база (`value.raw`). Volan не парсит JSON; передайте `value.raw` в ту JSON-библиотеку, которая уже используется в вашем проекте.
+</Note>
+
+## Сырой SQL внутри транзакций
+
+`rawQuery` и `rawExecute` автоматически участвуют в транзакциях Volan. Вызывайте их внутри блока `db.transaction { }`, чтобы включить их в ту же область соединения и commit/rollback, что и остальные операции Volan.
+
+```kotlin
+db.transaction {
+    val affected = rawExecute(
+        "UPDATE accounts SET balance = balance - ? WHERE id = ?",
+        listOf(amount, fromAccountId)
+    )
+    if (affected == 0L) throw InsufficientFundsException()
+
+    rawExecute(
+        "UPDATE accounts SET balance = balance + ? WHERE id = ?",
+        listOf(amount, toAccountId)
+    )
+}
+```
+
+## Когда использовать сырой SQL
+
+<CardGroup cols={2}>
+  <Card title="Используйте rawQuery, когда…" icon="circle-check">
+    - Нужны специфичные для СУБД функции (например, `jsonb_agg`, `ST_Distance`, оконные функции)
+    - Запрос включает рекурсивные CTE или сложные lateral join
+    - Вы мигрируете существующий запрос и хотите сохранить его дословно на переходный период
+  </Card>
+
+  <Card title="Предпочитайте построитель запроса, когда…" icon="thumbs-up">
+    - Фильтры, сортировки, пагинация и связи покрывают ваши потребности
+    - Нужна компиляционная проверка имён полей
+    - Запрос должен работать в разных диалектах баз без изменений
+  </Card>
+</CardGroup>
+
+## Что читать дальше
+
+<CardGroup cols={2}>
+  <Card title="Чтение" icon="database" href="/ru/querying/reading">
+    Используйте типобезопасный построитель запросов для самых частых операций чтения.
+  </Card>
+
+  <Card title="Агрегация" icon="sigma" href="/ru/querying/aggregation">
+    Используйте aggregate {} и groupBy {} для статистики без написания SQL.
+  </Card>
+</CardGroup>

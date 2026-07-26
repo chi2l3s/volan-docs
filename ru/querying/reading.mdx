@@ -1,0 +1,210 @@
+---
+title: "Чтение данных: сгенерированные методы репозитория Volan"
+sidebarTitle: "Чтение"
+description: "Узнайте, как получать отдельные записи, списки, количество и проверки существования с помощью сгенерированных методов репозитория Volan, включая запросы-проекции."
+---
+
+Каждой модели в вашей схеме Volan соответствует полностью типизированный репозиторий, доступный через клиент `db`. У этих репозиториев есть согласованный набор методов чтения — `findMany`, `findFirst`, `findFirstOrThrow`, `findUnique`, `findUniqueOrThrow`, `count` и `exists` — так что можно получать записи, не написав ни строчки SQL. Когда нужен только некоторый набор полей модели, `projectMany` и `projectFirst` позволяют явно указать, какие колонки выбрать; подробности см. в разделе [Сортировка и пагинация](/ru/querying/ordering-pagination).
+
+## findMany
+
+Используйте `findMany`, когда нужен список записей, удовлетворяющих условиям. Он всегда возвращает `List<T>` (никогда не `null`); если ни одна строка не подошла — вы получаете пустой список.
+
+<CodeGroup>
+
+```kotlin Kotlin
+val users = db.user.findMany {
+    where { email endsWith "@acme.com" }
+    orderBy { createdAt.desc() }
+    take = 20
+    skip = 0
+}
+```
+
+```java Java
+List<User> users = db.user().findMany(q -> q
+    .where(w -> w.email().endsWith("@acme.com"))
+    .orderBy(User_.CREATED_AT.desc())
+    .take(20)
+);
+```
+
+</CodeGroup>
+
+Лямбда, передаваемая в `findMany`, необязательна — вызов `db.user.findMany {}` без условий вернёт все строки таблицы.
+
+## findFirst
+
+`findFirst` возвращает первую подходящую запись или `null`, если такой нет. Это удобно, когда вы ожидаете ноль или одну запись и не хотите получать исключение при её отсутствии.
+
+<CodeGroup>
+
+```kotlin Kotlin
+val user = db.user.findFirst {
+    where { email eq "alice@acme.com" }
+}
+
+if (user != null) {
+    println(user.name)
+}
+```
+
+```java Java
+User user = db.user().findFirst(q -> q
+    .where(w -> w.email().eq("alice@acme.com"))
+);
+
+if (user != null) {
+    System.out.println(user.getName());
+}
+```
+
+</CodeGroup>
+
+<Tip>
+  Если отсутствие записи — исключительная ситуация в вашей бизнес-логике, предпочитайте `findFirstOrThrow`, чтобы ошибка проявилась сразу, а не как `NullPointerException` позднее по стеку вызовов.
+</Tip>
+
+## findFirstOrThrow
+
+`findFirstOrThrow` ведёт себя так же, как `findFirst`, но бросает `VolanNotFoundException` вместо возврата `null`, если ни одна запись не подходит. Возвращаемый тип не допускает `null`, поэтому результат можно использовать сразу.
+
+<CodeGroup>
+
+```kotlin Kotlin
+val user = db.user.findFirstOrThrow {
+    where { email eq "alice@acme.com" }
+}
+// user имеет тип User, никогда не null
+println(user.name)
+```
+
+```java Java
+User user = db.user().findFirstOrThrow(q -> q
+    .where(w -> w.email().eq("alice@acme.com"))
+);
+System.out.println(user.getName());
+```
+
+</CodeGroup>
+
+<Warning>
+  `VolanNotFoundException` — непроверяемое исключение. Ловите его на границе, где хотите превратить его в ошибку для пользователя (например, ответ HTTP 404).
+</Warning>
+
+## findUnique и findUniqueOrThrow
+
+Используйте `findUnique`, когда фильтруете по полю, помеченному `@id` или `@unique`. Volan проверит во время выполнения запроса, что ограничению соответствует ровно одна строка. Если передать не уникальное поле, Volan бросит `VolanNonUniqueFieldException`, чтобы ошибку заметить как можно раньше.
+
+- `findUnique` возвращает `T?` (nullable).
+- `findUniqueOrThrow` возвращает `T` (non-nullable) и бросает `VolanNotFoundException`, если запись отсутствует.
+
+<CodeGroup>
+
+```kotlin Kotlin
+// Фильтр по полю @unique
+val byEmail = db.user.findUnique {
+    where { email eq "alice@acme.com" }
+}
+
+// Фильтр по полю @id — бросает исключение, если запись не найдена
+val byId = db.user.findUniqueOrThrow {
+    where { id eq 42 }
+}
+```
+
+```java Java
+User byEmail = db.user().findUnique(q -> q
+    .where(w -> w.email().eq("alice@acme.com"))
+);
+
+User byId = db.user().findUniqueOrThrow(q -> q
+    .where(w -> w.id().eq(42))
+);
+```
+
+</CodeGroup>
+
+<Note>
+  Предпочитайте `findUnique` вместо `findFirst`, когда ищете по уникальному ограничению. Volan сгенерирует более эффективный запрос (поиск одной строки) и подскажет об ошибке в схеме, если вы случайно передадите не уникальное поле.
+</Note>
+
+## count
+
+`count` возвращает `Long` — количество строк, удовлетворяющих фильтру. Опустите условие `where`, чтобы посчитать все строки таблицы.
+
+<CodeGroup>
+
+```kotlin Kotlin
+val adminCount = db.user.count {
+    where { role eq Role.ADMIN }
+}
+
+val totalUsers = db.user.count {}
+```
+
+```java Java
+long adminCount = db.user().count(q -> q
+    .where(w -> w.role().eq(Role.ADMIN))
+);
+```
+
+</CodeGroup>
+
+## exists
+
+`exists` возвращает `Boolean` — есть ли хотя бы одна строка, соответствующая фильтру. Под капотом Volan выполняет запрос `SELECT 1 ... LIMIT 1`, что эффективнее, чем `count() > 0`, если важен только факт наличия.
+
+<CodeGroup>
+
+```kotlin Kotlin
+val taken = db.user.exists {
+    where { email eq "alice@acme.com" }
+}
+
+if (taken) {
+    throw EmailAlreadyRegisteredException()
+}
+```
+
+```java Java
+boolean taken = db.user().exists(q -> q
+    .where(w -> w.email().eq("alice@acme.com"))
+);
+```
+
+</CodeGroup>
+
+## Справочник по методам
+
+| Метод | Возвращаемый тип | Бросает исключение при отсутствии |
+| --- | --- | --- |
+| `findMany` | `List<T>` | — |
+| `findFirst` | `T?` | — |
+| `findFirstOrThrow` | `T` | `VolanNotFoundException` |
+| `findUnique` | `T?` | — |
+| `findUniqueOrThrow` | `T` | `VolanNotFoundException` |
+| `count` | `Long` | — |
+| `exists` | `Boolean` | — |
+| `projectMany` | `List<Projection>` | — |
+| `projectFirst` | `Projection?` | — |
+
+## Что читать дальше
+
+<CardGroup cols={2}>
+  <Card title="Фильтрация" icon="filter" href="/ru/querying/filtering">
+    Формулируйте точные условия в запросах с помощью полного набора операторов Volan.
+  </Card>
+
+  <Card title="Сортировка и пагинация" icon="arrow-down-wide-short" href="/ru/querying/ordering-pagination">
+    Сортируйте результаты и разбивайте их по страницам через смещение или курсор.
+  </Card>
+
+  <Card title="Связи" icon="diagram-project" href="/ru/querying/relations">
+    Загружайте связанные модели за один пакетный запрос.
+  </Card>
+
+  <Card title="Агрегация" icon="sigma" href="/ru/querying/aggregation">
+    Вычисляйте количество, суммы, средние значения и группировки.
+  </Card>
+</CardGroup>

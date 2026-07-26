@@ -1,0 +1,234 @@
+---
+title: "Вычисление агрегатов и группировка в Volan"
+sidebarTitle: "Агрегация"
+description: "Считайте количества, суммы, средние и экстремумы по своим данным через aggregate {} и разбивайте результаты на группы с помощью типобезопасного API groupBy {} Volan."
+---
+
+Когда вместо отдельных строк нужны вычисленные статистики, Volan предоставляет два специальных метода: `aggregate { }` для агрегаций по всей таблице или фильтрованной выборке и `groupBy { }` для группировки строк по значениям одного или нескольких полей с последующей агрегацией. Оба метода типобезопасны: свойства результата генерируются из схемы, так что нет строкового доступа к колонкам.
+
+## `aggregate { }`
+
+Метод `aggregate { }` вычисляет одну или несколько агрегатных функций по подходящим строкам и возвращает единый объект-результат. Вы явно включаете каждую функцию; Volan запрашивает только те вычисления, которые вы заказали.
+
+```kotlin
+val result = db.post.aggregate {
+    where { draft eq false }
+    count()
+    sum { views }
+    average { views }
+    minimum { createdAt }
+    maximum { views }
+}
+```
+
+### Свойства результата
+
+| Вызванная функция | Свойство результата | Возвращаемый тип |
+| --- | --- | --- |
+| `count()` | `result.count` | `Long` |
+| `sum { views }` | `result.sumOfViews` | `BigDecimal?` |
+| `average { views }` | `result.averageOfViews` | `Double?` |
+| `minimum { createdAt }` | `result.minimumOfCreatedAt` | `Instant?` |
+| `maximum { views }` | `result.maximumOfViews` | `Int?` |
+
+`sum` всегда возвращает `BigDecimal?`, а `average` — `Double?`, потому что база расширяет эти типы для точности. `minimum` и `maximum` возвращают собственный тип поля как nullable (например, `Int?` для поля `Int`, `Instant?` для `DateTime`), потому что результат равен `NULL`, когда ни одна строка не подходит. `count` всегда возвращает non-null `Long` (возвращает `0`, если строк нет).
+
+<Warning>
+  Обращение к свойству результата для функции, которую вы не запросили, бросает `VolanAggregateNotAskedException`. Например, чтение `result.sumOfViews`, когда вы вызвали только `count()`, оборвётся во время выполнения. Всегда вызывайте все агрегатные функции, свойства которых вы собираетесь читать.
+</Warning>
+
+### Примеры
+
+```kotlin
+// Всего опубликованных постов и среднее число просмотров
+val stats = db.post.aggregate {
+    where { draft eq false }
+    count()
+    average { views }
+}
+
+println("Опубликованные посты: ${stats.count}")
+println("Среднее число просмотров: ${stats.averageOfViews ?: 0.0}")
+```
+
+```kotlin
+// Диапазон дат всего контента
+val range = db.post.aggregate {
+    minimum { createdAt }
+    maximum { createdAt }
+}
+
+println("Первый пост: ${range.minimumOfCreatedAt}")
+println("Последний пост: ${range.maximumOfCreatedAt}")
+```
+
+<CodeGroup>
+
+```kotlin Kotlin
+val result = db.post.aggregate {
+    where { draft eq false }
+    count()
+    sum { views }
+    average { views }
+}
+```
+
+```java Java
+PostAggregateResult result = db.post().aggregate(q -> q
+    .where(w -> w.draft().eq(false))
+    .count()
+    .sum(f -> f.views())
+    .average(f -> f.views())
+);
+```
+
+</CodeGroup>
+
+## `groupBy { }`
+
+`groupBy { }` разбивает строки по одному или нескольким полям и вычисляет агрегатные функции в каждой группе. Это эквивалент SQL-конструкции `GROUP BY … HAVING …`, который возвращает список объектов-результатов группы.
+
+```kotlin
+val groups = db.post.groupBy {
+    by { authorId }
+    count()
+    sum { views }
+    having { count gt 5L }
+    orderBy { count.desc() }
+    take = 10
+}
+```
+
+### `by { }` — ключ группировки
+
+Перечислите поля, по которым хотите группировать, внутри `by { }`. Можно указать несколько полей для составного ключа группы.
+
+```kotlin
+db.post.groupBy {
+    by { authorId; categoryId }
+    count()
+}
+```
+
+### Агрегатные функции
+
+В `groupBy { }` доступны те же функции, что и в `aggregate { }`: `count()`, `sum { }`, `average { }`, `minimum { }`, `maximum { }`.
+
+### `having { }` — фильтрация групп
+
+`having { }` фильтрует результаты группировки после агрегации. Здесь доступны те же операторы упорядоченных полей (`gt`, `gte`, `lt`, `lte`, `eq`, `between` и т. д.), применяемые к вычисленным агрегатным значениям.
+
+```kotlin
+db.post.groupBy {
+    by { authorId }
+    count()
+    sum { views }
+    having { count gt 5L }          // только авторы с более чем 5 постами
+}
+```
+
+Можно комбинировать несколько условий в `having`:
+
+```kotlin
+having {
+    count gte 3L
+    sumOfViews gt BigDecimal("10000")
+}
+```
+
+### Сортировка и ограничение групп
+
+Используйте `orderBy { }` и `take` / `skip` на результатах группировки точно так же, как в `findMany`:
+
+```kotlin
+db.post.groupBy {
+    by { authorId }
+    count()
+    sum { views }
+    orderBy {
+        sumOfViews.desc()
+        count.desc()
+    }
+    take = 20
+}
+```
+
+### Доступ к результатам группы
+
+```kotlin
+val groups = db.post.groupBy {
+    by { authorId }
+    count()
+    sum { views }
+}
+
+groups[0].authorId    // Int  — значение поля группировки
+groups[0].count       // Long
+groups[0].sumOfViews  // BigDecimal?
+```
+
+<Warning>
+  Обращение к полю, которого нет в `by { }`, на объекте результата группы оборвётся во время выполнения. Например, если вы группировали только по `authorId`, чтение `groups[0].categoryId` упадёт. Придерживайтесь полей, объявленных в `by { }`, и свойств агрегатов, которые запросили.
+</Warning>
+
+### Полный пример
+
+```kotlin
+// Топ-10 авторов по общему числу просмотров среди тех, у кого более 5 опубликованных постов
+val topAuthors = db.post.groupBy {
+    by { authorId }
+    count()
+    sum { views }
+    average { views }
+    having { count gt 5L }
+    orderBy { sumOfViews.desc() }
+    take = 10
+}
+
+topAuthors.forEach { group ->
+    println(
+        "Автор ${group.authorId}: " +
+        "${group.count} постов, " +
+        "${group.sumOfViews} всего просмотров, " +
+        "${group.averageOfViews?.let { "%.1f".format(it) }} в среднем"
+    )
+}
+```
+
+<CodeGroup>
+
+```kotlin Kotlin
+val groups = db.post.groupBy {
+    by { authorId }
+    count()
+    sum { views }
+    having { count gt 5L }
+    orderBy { count.desc() }
+    take = 10
+}
+```
+
+```java Java
+List<PostGroupResult> groups = db.post().groupBy(q -> q
+    .by(b -> b.authorId())
+    .count()
+    .sum(f -> f.views())
+    .having(h -> h.count().gt(5L))
+    .orderBy(PostGroupResult_.COUNT.desc())
+    .take(10)
+);
+```
+
+</CodeGroup>
+
+## Что читать дальше
+
+<CardGroup cols={2}>
+  <Card title="Фильтрация" icon="filter" href="/ru/querying/filtering">
+    Применяйте фильтры where до выполнения агрегаций.
+  </Card>
+
+  <Card title="Сырой SQL" icon="code" href="/ru/querying/raw-sql">
+    Переходите на сырой SQL для агрегаций, выходящих за рамки построителя.
+  </Card>
+</CardGroup>

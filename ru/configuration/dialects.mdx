@@ -1,0 +1,134 @@
+---
+title: "Диалекты баз данных и их возможности"
+sidebarTitle: "Диалекты"
+description: "Узнайте, как Volan автоматически находит диалекты через ServiceLoader, какие диалекты доступны и какие возможности SQL поддерживает каждая база."
+---
+
+Диалект — это мост между движком запросов Volan и конкретной базой данных. Он переводит абстрактные операции запроса в SQL-синтаксис и набор возможностей конкретной СУБД. Volan поставляет каждый диалект как отдельный артефакт, чтобы в вашем рантайм-класспате лежало только нужное.
+
+## Как работает поиск диалекта
+
+Volan находит диалекты автоматически через механизм Java `ServiceLoader`. Когда вы вызываете `.build()` на билдере клиента, Volan проверяет префикс URL JDBC и подгружает подходящий диалект с класспата — ручная регистрация не нужна.
+
+```text
+jdbc:postgresql://...  →  volan-dialect-postgres
+jdbc:mysql://...       →  volan-dialect-mysql      (скоро)
+jdbc:mariadb://...     →  volan-dialect-mysql      (скоро)
+jdbc:sqlite:...        →  volan-dialect-sqlite     (скоро)
+jdbc:h2:...            →  volan-dialect-h2         (скоро)
+```
+
+Каждый артефакт диалекта содержит файл регистрации `ServiceLoader`, сопоставляющий префикс URL с реализацией диалекта. Пока артефакт на рантайм-класспате, Volan найдёт его без изменения кода.
+
+<Note>
+  Если Volan не может найти диалект для URL, он бросит исключение на `build()` с сообщением, что префикс URL не разрешён. Добавьте нужный артефакт диалекта.
+</Note>
+
+---
+
+## Добавление диалекта в класспат
+
+Чтобы использовать диалект, добавьте его артефакт как runtime-зависимость в сборочный файл. Ссылаться на диалект в Kotlin-коде не нужно.
+
+<Tabs>
+  <Tab title="Gradle (Kotlin DSL)">
+    ```kotlin
+    dependencies {
+        runtimeOnly("io.github.thirtyeighttwentysix:volan-dialect-postgres:0.1.0-SNAPSHOT")
+    }
+    ```
+  </Tab>
+  <Tab title="Gradle (Groovy DSL)">
+    ```groovy
+    dependencies {
+        runtimeOnly 'io.github.thirtyeighttwentysix:volan-dialect-postgres:0.1.0-SNAPSHOT'
+    }
+    ```
+  </Tab>
+  <Tab title="Maven">
+    ```xml
+    <dependency>
+      <groupId>io.github.thirtyeighttwentysix</groupId>
+      <artifactId>volan-dialect-postgres</artifactId>
+      <version>0.1.0-SNAPSHOT</version>
+      <scope>runtime</scope>
+    </dependency>
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Значение `provider` в блоке `datasource` и артефакт диалекта на класспате должны совпадать. Генерация с `provider = "postgresql"` на `volan-dialect-mysql` приведёт к неверному SQL.
+</Warning>
+
+---
+
+## Доступные диалекты
+
+<CardGroup cols={2}>
+  <Card title="PostgreSQL" icon="database">
+    **Артефакт:** `volan-dialect-postgres`<br />**Статус:** ✅ Доступен<br />**Префикс URL:** `jdbc:postgresql:`
+
+    Полная поддержка всех текущих возможностей Volan. Рекомендуется для продакшена.
+  </Card>
+
+  <Card title="MySQL / MariaDB" icon="database">
+    **Артефакт:** `volan-dialect-mysql`<br />**Статус:** 🚧 Скоро<br />**Префикс URL:** `jdbc:mysql:` / `jdbc:mariadb:`
+
+    Поддержка MySQL 8\+ и MariaDB 10.5\+. Следите за changelog.
+  </Card>
+
+  <Card title="SQLite" icon="database">
+    **Артефакт:** `volan-dialect-sqlite`<br />**Статус:** 🚧 Скоро<br />**Префикс URL:** `jdbc:sqlite:`
+
+    Лёгкая встраиваемая база для локальной разработки и тестов.
+  </Card>
+
+  <Card title="H2" icon="database">
+    **Артефакт:** `volan-dialect-h2`<br />**Статус:** 🚧 Скоро<br />**Префикс URL:** `jdbc:h2:`
+
+    In-memory и файловый H2, прежде всего для интеграционных тестов в CI.
+  </Card>
+</CardGroup>
+
+---
+
+## Возможности диалектов
+
+Разные базы поддерживают разные SQL-возможности. Volan представляет их как флаги `DialectCapabilities`, которые движок запросов проверяет в рантайме для выбора способа построения выражений. Обращаться к этим флагам напрямую не нужно — они управляют внутренним поведением автоматически.
+
+| Возможность | Описание | PostgreSQL |
+| --- | --- | :-: |
+| `returningClause` | Операции записи могут вычитывать изменённые строки в том же выражении (`RETURNING`), избавляя от отдельного `SELECT`. | ✅ |
+| `insertOnConflict` | Нативный upsert через `INSERT ... ON CONFLICT DO UPDATE`. Позволяет эффективный upsert без отдельной проверки существования. | ✅ |
+| `caseInsensitiveLike` | Нативный оператор `ILIKE` для сравнения без учёта регистра. Без его Volan откатывается к `LOWER(col) LIKE LOWER(?)`. | ✅ |
+| `distinctOn` | Выражение `DISTINCT ON (expr)` для выбора первой строки на группу. | ✅ |
+| `nullsOrdering` | `NULLS FIRST` / `NULLS LAST` в `ORDER BY`. Без него порядок null определяет база. | ✅ |
+| `tupleComparison` | Составная курсорная пагинация через сравнение кортежей `(col1, col2) > (val1, val2)`, эффективная keyset-пагинация. | ✅ |
+| `arrayColumns` | Нативные массивные колонки (например, `TEXT[]`, `INT[]`). Модели с массивными полями требуют диалекта с этой возможностью. | ✅ |
+| `maximumParameters` | Максимальное число параметров в одном выражении. Volan разбивает большие списки `IN (...)`, если лимит будет превышен. | 65 535 |
+
+<Tip>
+  PostgreSQL поддерживает все текущие флаги возможностей, что — одна из причин, по которым её рекомендуют для Volan в продакшене. По мере появления диалектов MySQL, SQLite и H2 их матрицы возможностей будут опубликованы здесь.
+</Tip>
+
+---
+
+## Ручное переопределение диалекта
+
+Автоопределение покрывает подавляющее большинство случаев. Если нужно всё же принудить к конкретному диалекту — например, в тесте, который строит клиент из URL без стандартного префикса — переопределите его на билдере:
+
+```kotlin
+val db = BlogClient.builder()
+    .url("jdbc:postgresql://localhost:5432/testdb")
+    .dialect(PostgresDialect)
+    .build()
+```
+
+<ParamField path="dialect" type="Dialect">
+  Принудительно задаёт диалект независимо от префикса URL. Соответствующий артефакт всё равно должен быть на runtime-класспате.
+</ParamField>
+
+<Note>
+  В продакшен-коде `.dialect()` нужен редко. Если вы используете его, чтобы обойти сбой поиска, убедитесь, что артефакт диалекта объявлен как `runtimeOnly` и не исключён из итогового JAR или образа.
+</Note>

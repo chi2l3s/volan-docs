@@ -110,15 +110,32 @@
               },
               {
                 "group": "Запросы",
-                "pages": []
+                "pages": [
+                  "ru/querying/reading",
+                  "ru/querying/filtering",
+                  "ru/querying/ordering-pagination",
+                  "ru/querying/relations",
+                  "ru/querying/aggregation",
+                  "ru/querying/raw-sql"
+                ]
               },
               {
                 "group": "Запись данных",
-                "pages": []
+                "pages": [
+                  "ru/writing/create",
+                  "ru/writing/update",
+                  "ru/writing/delete",
+                  "ru/writing/nested-writes",
+                  "ru/writing/transactions"
+                ]
               },
               {
                 "group": "Конфигурация",
-                "pages": []
+                "pages": [
+                  "ru/configuration/datasource",
+                  "ru/configuration/codegen",
+                  "ru/configuration/dialects"
+                ]
               },
               {
                 "group": "Справочник",

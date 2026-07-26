@@ -1,0 +1,164 @@
+---
+title: "Настройка подключения к базе в Volan"
+sidebarTitle: "Источник данных"
+description: "Определите провайдера базы и URL подключения в schema.volan, затем настройте runtime-клиент с параметрами пула, учётными данными или собственным DataSource."
+---
+
+Volan разделяет конфигурацию базы на два слоя: блок `datasource` в файле `schema.volan`, который управляет генерацией кода, и runtime-builder сгенерированного клиента, который управляет живым пулом соединений. Понимание обоих слоёв даёт полный контроль над тем, как Volan подключается к базе в каждом окружении.
+
+## Блок `datasource`
+
+Блок `datasource` находится в вашем `schema.volan` и говорит генератору кода, какую базу вы целевуете. Каждая схема должна содержать ровно один блок `datasource`.
+
+```prisma
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+```
+
+<ParamField path="provider" type="string" required>
+  Целевой диалект базы. Должен совпадать с dialect-артефактом на classpath в runtime. Допустимые значения: `"postgresql"`, `"mysql"`, `"sqlite"`, `"h2"`.
+</ParamField>
+
+<ParamField path="url" type="string" required>
+  URL JDBC-подключения. Используйте `env("VAR_NAME")`, чтобы читать значение из переменной окружения в runtime. Volan выводит предупреждение, если вы вставите голую строку подключения — в проде настоятельно рекомендуется использовать переменные окружения.
+</ParamField>
+
+<Warning>
+  Вставка строки подключения напрямую (например, `url = "jdbc:postgresql://localhost/myapp"`) вызовёт предупреждение Volan при генерации. Используйте `env()` для любого окружения вне вашего локального компьютера.
+</Warning>
+
+### Поддерживаемые провайдеры
+
+| Значение | Артефакт диалекта | Статус |
+| --- | --- | --- |
+| `"postgresql"` | `volan-dialect-postgres` | Доступен |
+| `"mysql"` | `volan-dialect-mysql` | Скоро |
+| `"sqlite"` | `volan-dialect-sqlite` | Скоро |
+| `"h2"` | `volan-dialect-h2` | Скоро |
+
+---
+
+## Runtime-builder подключения
+
+Сгенерированный клиент предоставляет companion-метод `builder()`, возвращающий экземпляр `Volan.Builder`. Вызовите его, чтобы настроить живое соединение до того, как приложение начнёт обслуживать трафик.
+
+### URL, учётные данные и параметры пула
+
+```kotlin
+val db = BlogClient.builder()
+    .url("jdbc:postgresql://localhost:5432/myapp")
+    .username("postgres")
+    .password(System.getenv("DB_PASSWORD"))
+    .maxPoolSize(10)
+    .connectionTimeout(30_000)
+    .poolName("my-pool")
+    .build()
+```
+
+<ParamField path="url" type="String" required>
+  URL JDBC-подключения. Обязателен, если не передаётся собственный `dataSource`. Также используется для автоопределения диалекта по префиксу URL.
+</ParamField>
+
+<ParamField path="username" type="String">
+  Имя пользователя базы. Не требуется, если учётные данные встроены в URL или управляются вашим `DataSource`.
+</ParamField>
+
+<ParamField path="password" type="String">
+  Пароль базы. Читайте его из окружения в runtime — никогда не зашивайте его в исходный код.
+</ParamField>
+
+<ParamField path="maxPoolSize" default="10" type="Int">
+  Максимальное число соединений в пуле. Значение `10` по умолчанию подходит для многих нагрузок; увеличивайте его для высококонкурентных сервисов.
+</ParamField>
+
+<ParamField path="connectionTimeout" default="30000" type="Long">
+  Максимум миллисекунд, в течение которых клиент ждёт получения соединения из пула, прежде чем бросить исключение. По умолчанию `30_000` (30 секунд).
+</ParamField>
+
+<ParamField path="poolName" type="String">
+  Опциональная метка, присваиваемая пулу. Появляется в JMX и панелях мониторинга, что полезно, когда одна JVM держит несколько пулов.
+</ParamField>
+
+### Собственный DataSource
+
+Когда приложение работает внутри контейнера или сервера приложений, управляющего своим пулом соединений (например, контейнер Jakarta EE или Spring-бин `DataSource`), вы можете передать Volan готовый `javax.sql.DataSource` и полностью пропустить URL/логин/пароль.
+
+```kotlin
+val db = BlogClient.builder()
+    .dataSource(myDataSource)
+    .build()
+```
+
+<ParamField path="dataSource" type="javax.sql.DataSource">
+  Внешне управляемый `DataSource`. Когда выставлен, `url`, `username`, `password`, `maxPoolSize` и `connectionTimeout` игнорируются. Вызов `close()` на клиенте **не** завершает внешний `DataSource`.
+</ParamField>
+
+<Tip>
+  Предпочитайте `.dataSource()` в контейнерных развёртываниях и в тестовых пакетах, где используется встроенный пул (H2 или Testcontainers), чтобы Volan не создавал второй пул поверх уже существующего.
+</Tip>
+
+### Переопределение диалекта
+
+Volan автоматически определяет нужный диалект по префиксу JDBC URL через механизм Java `ServiceLoader`. Вызывать `.dialect()` нужно только в редких случаях, когда автоопределение не работает или когда вы хотите явно выставить его в тестах.
+
+```kotlin
+val db = BlogClient.builder()
+    .url("jdbc:postgresql://localhost:5432/myapp")
+    .dialect(PostgresDialect)
+    .build()
+```
+
+<ParamField path="dialect" type="Dialect">
+  Принудительно выбирает диалект вместо автоопределения. Соответствующий артефакт диалекта всё равно должен быть в runtime classpath.
+</ParamField>
+
+---
+
+## Закрытие клиента
+
+Вызывайте `close()` при завершении приложения, чтобы аккуратно освободить ресурсы пула.
+
+```kotlin
+db.close()
+```
+
+- Если Volan сам создал пул соединений (вы использовали `.url()`), `close()` полностью завершает пул.
+- Если вы передали свой `DataSource` через `.dataSource()`, `close()` ничего не делает — управление жизненным циклом остаётся на вызывающей стороне.
+
+<Warning>
+  Если не вызвать `close()`, когда Volan владеет пулом, фоновые потоки останутся запущенными и могут воспрепятствовать чистому завершению JVM.
+</Warning>
+
+---
+
+## Полный пример
+
+<CodeGroup>
+
+```kotlin Kotlin (env variable)
+val db = BlogClient.builder()
+    .url(System.getenv("DATABASE_URL"))
+    .username(System.getenv("DB_USER"))
+    .password(System.getenv("DB_PASSWORD"))
+    .maxPoolSize(20)
+    .connectionTimeout(5_000)
+    .poolName("blog-pool")
+    .build()
+
+// ... используйте db ...
+
+db.close()
+```
+
+```kotlin Kotlin (BYO DataSource)
+// myDataSource — javax.sql.DataSource, управляемый вашим фреймворком или контейнером
+val db = BlogClient.builder()
+    .dataSource(myDataSource)
+    .build()
+
+// Volan не закроет myDataSource — управляйте его жизненным циклом сами
+```
+
+</CodeGroup>

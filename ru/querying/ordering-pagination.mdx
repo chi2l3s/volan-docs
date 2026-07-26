@@ -1,0 +1,213 @@
+---
+title: "Сортировка, пагинация по смещению и курсору в Volan ORM"
+sidebarTitle: "Сортировка и пагинация"
+description: "Сортируйте результаты запросов, разбивайте их на страницы через смещение или курсор, убирайте дубликаты через distinct и получайте частичные записи через проекции select."
+---
+
+Когда вы отфильтровали нужные строки, Volan даёт тонкий контроль над тем, как они упорядочены, сколько возвращается за раз, схлопывать ли дубликаты и какие поля включаются в результат. Все эти возможности живут в той же лямбде построителя запросов, что используют `findMany`, `findFirst`, `projectMany` и `projectFirst`.
+
+## Сортировка через `orderBy`
+
+Блок `orderBy { }` принимает одну или несколько директив по полям. Volan применяет их как многоколоночный `ORDER BY` в том порядке, в каком вы их перечислили.
+
+### Методы направления
+
+| Метод | Аналог SQL |
+| --- | --- |
+| `asc()` | `ASC` |
+| `desc()` | `DESC` |
+| `ascNullsFirst()` | `ASC NULLS FIRST` |
+| `ascNullsLast()` | `ASC NULLS LAST` |
+| `descNullsFirst()` | `DESC NULLS FIRST` |
+| `descNullsLast()` | `DESC NULLS LAST` |
+
+```kotlin
+val posts = db.post.findMany {
+    where { draft eq false }
+    orderBy {
+        createdAt.desc()
+        title.asc()
+    }
+}
+```
+
+Варианты `NullsFirst` / `NullsLast` полезны для nullable-полей, когда вам нужен явный контроль над тем, где окажутся значения `NULL` в отсортированном выводе:
+
+```kotlin
+db.post.findMany {
+    orderBy {
+        score.descNullsLast()   // посты с рейтингом впереди, без рейтинга — в конце
+        createdAt.ascNullsFirst()
+    }
+}
+```
+
+<CodeGroup>
+
+```kotlin Kotlin
+db.user.findMany {
+    orderBy {
+        createdAt.desc()
+        name.asc()
+    }
+}
+```
+
+```java Java
+db.user().findMany(q -> q
+    .orderBy(User_.CREATED_AT.desc(), User_.NAME.asc())
+);
+```
+
+</CodeGroup>
+
+## Пагинация по смещению
+
+Пагинация по смещению — самый простой подход: `take` задаёт размер страницы, а `skip` продвигает вы по набору результатов.
+
+```kotlin
+// Страница 1
+val page1 = db.post.findMany {
+    orderBy { createdAt.desc() }
+    take = 10
+    skip = 0
+}
+
+// Страница 2
+val page2 = db.post.findMany {
+    orderBy { createdAt.desc() }
+    take = 10
+    skip = 10
+}
+```
+
+<Tip>
+  Всегда сочетайте `take` / `skip` с выражением `orderBy`. Без стабильного порядка сортировки база вправе возвращать строки в любом порядке, и ваши страницы могут пересекаться или терять записи.
+</Tip>
+
+<Note>
+  Пагинация по смещению может стать дорогой на больших таблицах, так как база должна просканировать и отбросить первые `skip` строк. Для глубоких страниц на нагруженных таблицах лучше использовать курсорную пагинацию.
+</Note>
+
+## Курсорная пагинация
+
+Курсорная пагинация использует первичный ключ последней полученной записи для загрузки следующей страницы. Она стабильна и производительна независимо от глубины выборки.
+
+```kotlin
+// Первая страница — курсор не нужен
+val firstPage = db.post.findMany {
+    orderBy { id.asc() }
+    take = 10
+}
+
+// Следующие страницы — передайте id последней записи с предыдущей страницы
+val nextPage = db.post.findMany {
+    cursor(id = lastSeenId)
+    take = 10
+}
+```
+
+<Note>
+  Курсорная пагинация всегда использует поле первичного ключа. Убедитесь, что `orderBy` включает то же поле, что и в `cursor()`, чтобы выборка была детерминированной.
+</Note>
+
+## Distinct
+
+Блок `distinct { }` добавляет `SELECT DISTINCT` по указанным полям, схлопывая дубликаты в выборке.
+
+```kotlin
+// Каждый уникальный email появляется только один раз
+val results = db.user.findMany {
+    distinct { email }
+}
+```
+
+Можно указать несколько полей, чтобы убирать дубликаты по составному ключу:
+
+```kotlin
+val results = db.post.findMany {
+    distinct { authorId; categoryId }
+}
+```
+
+## Проекции через `projectMany` и `projectFirst`
+
+Иногда нужен только набор полей модели — например, заполнение выпадающего списка только с `id` и `name`. Получать в таком случае целые строки — тратить канал и память. Методы Volan `projectMany` и `projectFirst` позволяют явно указать, какие поля извлечь.
+
+```kotlin
+val projections = db.post.projectMany {
+    select { title; authorId }
+    where { draft eq false }
+    orderBy { createdAt.desc() }
+    take = 50
+}
+```
+
+Результат — список лёгких объектов-проекций, а не полные экземпляры `Post`:
+
+```kotlin
+projections[0].title    // ✅ "Hello, World"
+projections[0].authorId // ✅ 7
+projections[0].body     // ❌ бросает VolanFieldNotSelectedException
+```
+
+<Warning>
+  Обращение к полю, которое не было указано в `select { }`, выбрасывает `VolanFieldNotSelectedException` во время выполнения. Включайте все поля, которые собираетесь читать, или используйте `findMany`, чтобы загрузить модель целиком.
+</Warning>
+
+`projectFirst` работает как `findFirst` — возвращает один объект-проекцию или `null`, если ни одна строка не подходит:
+
+```kotlin
+val projection = db.user.projectFirst {
+    select { id; name; avatarUrl }
+    where { id eq userId }
+}
+```
+
+<CodeGroup>
+
+```kotlin Kotlin
+val projections = db.post.projectMany {
+    select { title; authorId }
+    where { draft eq false }
+}
+```
+
+```java Java
+List<PostProjection> projections = db.post().projectMany(q -> q
+    .select(s -> s.title().authorId())
+    .where(w -> w.draft().eq(false))
+);
+```
+
+</CodeGroup>
+
+## Сочетаем всё вместе
+
+Все эти выражения свободно компонуются внутри одного построителя запросов:
+
+```kotlin
+val results = db.post.projectMany {
+    select { id; title; views }
+    where { draft eq false }
+    distinct { authorId }
+    orderBy {
+        views.descNullsLast()
+        createdAt.desc()
+    }
+    take = 25
+    skip = 0
+}
+```
+
+## Что читать дальше
+
+<CardGroup cols={2}>
+  <Card title="Связи" icon="diagram-project" href="/ru/querying/relations">
+    Жадно загружайте связанные модели вместе с основными результатами за один запрос.
+  </Card>
+
+  <Card title="Агрегация" icon="sigma" href="/ru/querying/aggregation">
+    Вычисляйте суммы, средние и статистику по группам.
+  </Card>
+</CardGroup>

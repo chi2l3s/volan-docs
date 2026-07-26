@@ -1,0 +1,256 @@
+---
+title: "Настройка генерации кода Volan для Kotlin"
+sidebarTitle: "Генерация кода"
+description: "Настройте блок generator в schema.volan, подключите задачу Gradle и узнайте, что Volan генерирует — сущности, DSL, репозитории и типизированного клиента."
+---
+
+Volan генерирует полностью типизированного Kotlin-клиента из файла `schema.volan`. Перед тем как Kotlin-код будет создан, нужны две вещи: блок `generator` в схеме, управляющий генерацией, и задача Gradle, вызывающая генератор в рамках сборки. Эта страница проведёт вас через оба шага.
+
+## Блок `generator`
+
+Блок `generator` располагается рядом с блоком `datasource` в `schema.volan` и указывает генератору, какой язык-цель и какие настройки вывода использовать.
+
+```prisma
+generator client {
+  provider     = "volan-kotlin"
+  package      = "com.example.myapp"
+  output       = "build/generated/volan"
+  javaFriendly = true
+}
+```
+
+<ParamField path="provider" type="string" required>
+  Всегда `"volan-kotlin"`. Это единственный поддерживаемый провайдер генератора; значение обязательно и должно совпадать точно.
+</ParamField>
+
+<ParamField path="package" type="string" required>
+  Корневой Java/Kotlin-пакет для всех сгенерированных файлов. Например, `"com.example.myapp"` помещает сгенерированные классы в `com/example/myapp/` внутри каталога вывода.
+</ParamField>
+
+<ParamField path="output" default="build/generated/volan" type="string">
+  Путь к каталогу для сгенерированных источников относительно корня проекта. По умолчанию `build/generated/volan`. Генератор создаёт каталог, если его нет.
+</ParamField>
+
+<ParamField path="javaFriendly" default="false" type="boolean">
+  При `true` генератор выдаёт дополнительные Java-дружественные билдеры наряду с идиоматичным Kotlin-API. Включайте это, если часть вашего кода написана на Java.
+</ParamField>
+
+---
+
+## Что Volan генерирует
+
+Запуск генератора по вашей схеме производит следующие артефакты в каталоге `output`:
+
+- **Сущностные data-классы** — один неизменяемый Kotlin data-класс на модель с полями, типизированными точно как объявлено в схеме.
+- **DSL запросов** — типобезопасный построитель для `SELECT`, `WHERE`, `ORDER BY` и пагинации, привязанный к каждой модели.
+- **DSL записи** — билдеры для `INSERT`, `UPDATE` и `DELETE` с валидацией полей на этапе компиляции.
+- **Мапперы** — преобразователи `ResultSet` в сущности, используемые внутри репозиториев.
+- **Репозитории** — классы по каждой модели, оборачивающие DSL и выполняющие его против живого подключения.
+- **Наследник `VolanClient`** — именованный класс клиента (например, `BlogClient`), который владеет пулом соединений и предоставляет все репозитории как типизированные свойства.
+
+<Note>
+  Сгенерированный класс `VolanClient` — точка входа, которую импортирует ваш код приложения. Классы сущностей и репозитории не создаются напрямую — получайте их через клиент.
+</Note>
+
+---
+
+## Подключение задачи Gradle
+
+Официальный плагин Gradle в дорожной карте — майлстоун **M9**. Пока его нет, вы подключаете генератор вручную — написав маленький запускатель и зарегистрировав `JavaExec`-задачу.
+
+<Steps>
+  <Step title="Объявите конфигурацию класспата генератора">
+    Добавьте выделенную Gradle-конфигурацию, чтобы изолировать зависимости генератора от класспатов компиляции и рантайма.
+
+    ```kotlin
+    // build.gradle.kts
+    
+    val generatorClasspath: Configuration by configurations.creating
+    ```
+  </Step>
+  <Step title="Добавьте зависимости генератора и диалекта">
+    Подключите артефакт codegen и диалект, соответствующий вашему `provider`.
+
+    ```kotlin
+    dependencies {
+        generatorClasspath("io.github.thirtyeighttwentysix:volan-codegen:0.1.0-SNAPSHOT")
+        generatorClasspath("io.github.thirtyeighttwentysix:volan-dialect-postgres:0.1.0-SNAPSHOT")
+    }
+    ```
+
+    Полный список артефактов см. в разделе [Диалекты](/ru/configuration/dialects).
+  </Step>
+  <Step title="Напишите запускатель генератора">
+    Создайте маленькую Kotlin-функцию `main`, которая загружает схему и вызывает `VolanGenerator.writeTo()`. Поместите её в отдельный source set (например, `src/generator/kotlin`), чтобы она компилировалась только против `generatorClasspath` и не попадала на основной класспат.
+
+    ```kotlin
+    // src/generator/kotlin/generate/GenerateClient.kt
+    
+    package generate
+    
+    import io.github.thirtyeighttwentysix.volan.codegen.VolanGenerator
+    import io.github.thirtyeighttwentysix.volan.ir.SchemaLoader
+    import io.github.thirtyeighttwentysix.volan.schema.SourceFile
+    import java.nio.file.Path
+    import kotlin.io.path.readText
+    import kotlin.system.exitProcess
+    
+    fun main(arguments: Array<String>) {
+        if (arguments.size != 2) {
+            System.err.println("usage: generate-client <schema.volan> <output directory>")
+            exitProcess(2)
+        }
+        val schemaPath = Path.of(arguments[0])
+        val result = SchemaLoader.load(SourceFile(schemaPath.fileName.toString(), schemaPath.readText()))
+        if (result.hasErrors) {
+            System.err.print(result.render())
+            exitProcess(1)
+        }
+        val output = Path.of(arguments[1])
+        output.toFile().deleteRecursively()
+        val written = VolanGenerator.writeTo(result.schemaOrThrow(), output)
+        written.forEach { println("generated $it") }
+    }
+    ```
+
+    Подключите выделенный source set к конфигурации генератора в сборочном файле:
+
+    ```kotlin
+    val generator: SourceSet by sourceSets.creating
+    
+    dependencies {
+        "generatorImplementation"("io.github.thirtyeighttwentysix:volan-codegen:0.1.0-SNAPSHOT")
+        "generatorImplementation"("io.github.thirtyeighttwentysix:volan-dialect-postgres:0.1.0-SNAPSHOT")
+    }
+    ```
+  </Step>
+  <Step title="Зарегистрируйте задачу генерации">
+    Объявите задачу `JavaExec`, которая запускает запускатель, передавая путь к схеме и каталог вывода как аргументы. Настройте инкрементальную сборку, чтобы задача перезапускалась только при изменении схемы.
+
+    ```kotlin
+    val schemaFile = layout.projectDirectory.file("schema/schema.volan")
+    val generatedSources = layout.buildDirectory.dir("generated/volan")
+    
+    val generateVolanClient by tasks.registering(JavaExec::class) {
+        group = "build"
+        description = "Generates the Volan client from schema.volan."
+        classpath = generator.runtimeClasspath
+        mainClass.set("generate.GenerateClientKt")
+        inputs.file(schemaFile).withPathSensitivity(PathSensitivity.RELATIVE)
+        outputs.dir(generatedSources)
+        args(
+            schemaFile.asFile.absolutePath,
+            generatedSources.get().asFile.absolutePath
+        )
+    }
+    ```
+  </Step>
+  <Step title="Подключите сгенерированные источники к компиляции Kotlin">
+    Сообщите source set Kotlin о каталоге генерации, затем сделайте `compileKotlin` зависящим от задачи генерации, чтобы источники всегда существовали до компиляции.
+
+    ```kotlin
+    sourceSets.main {
+        kotlin.srcDir(generatedSources)
+    }
+    tasks.named("compileKotlin") { dependsOn(generateVolanClient) }
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  Благодаря `inputs.file(schemaFile)` и `outputs.dir(generatedSources)`, Gradle пропускает задачу на повторных сборках, если схема не менялась.
+</Tip>
+
+---
+
+## Полный фрагмент `build.gradle.kts`
+
+```kotlin
+// build.gradle.kts
+
+val generator: SourceSet by sourceSets.creating
+
+val generatedSources = layout.buildDirectory.dir("generated/volan")
+val schemaFile = layout.projectDirectory.file("schema/schema.volan")
+
+dependencies {
+    "generatorImplementation"("io.github.thirtyeighttwentysix:volan-codegen:0.1.0-SNAPSHOT")
+    "generatorImplementation"("io.github.thirtyeighttwentysix:volan-dialect-postgres:0.1.0-SNAPSHOT")
+
+    implementation("io.github.thirtyeighttwentysix:volan-runtime:0.1.0-SNAPSHOT")
+    runtimeOnly("io.github.thirtyeighttwentysix:volan-dialect-postgres:0.1.0-SNAPSHOT")
+}
+
+val generateVolanClient by tasks.registering(JavaExec::class) {
+    group = "build"
+    description = "Generates the Volan client from schema.volan."
+    classpath = generator.runtimeClasspath
+    mainClass.set("generate.GenerateClientKt")
+    inputs.file(schemaFile).withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.dir(generatedSources)
+    args(
+        schemaFile.asFile.absolutePath,
+        generatedSources.get().asFile.absolutePath
+    )
+}
+
+sourceSets.main {
+    kotlin.srcDir(generatedSources)
+}
+tasks.named("compileKotlin") { dependsOn(generateVolanClient) }
+```
+
+---
+
+## Точка входа генератора
+
+Задача `JavaExec` вызывает ваш запускатель, который, в свою очередь, вызывает `VolanGenerator.writeTo()`. Если вы почему-то запускаете генератор вне Gradle, API выглядит так:
+
+```kotlin
+import io.github.thirtyeighttwentysix.volan.codegen.VolanGenerator
+import io.github.thirtyeighttwentysix.volan.ir.SchemaLoader
+import io.github.thirtyeighttwentysix.volan.schema.SourceFile
+
+val schemaPath = Path.of("schema/schema.volan")
+val result = SchemaLoader.load(
+    SourceFile(schemaPath.fileName.toString(), schemaPath.readText())
+)
+
+if (result.hasErrors) {
+    System.err.print(result.render())
+    exitProcess(1)
+}
+
+val written = VolanGenerator.writeTo(
+    result.schemaOrThrow(),
+    Path.of("build/generated/volan")
+)
+```
+
+`SchemaLoader.load()` разбирает и валидирует схему, возвращая результат с диагностикой. Если `hasErrors` равен true, `render()` форматирует ошибки для отображения. `VolanGenerator.writeTo()` выполняет саму генерацию и возвращает список записанных путей.
+
+<Warning>
+  Всегда проверяйте `result.hasErrors` перед вызовом `result.schemaOrThrow()`. Вызов `schemaOrThrow()` на результате с ошибками бросает исключение.
+</Warning>
+
+---
+
+## Запуск генерации кода
+
+Когда задача подключена, запускайте её из командной строки:
+
+```bash
+./gradlew generateVolanClient
+```
+
+Или запускайте любую задачу, зависящую от `compileKotlin`:
+
+```bash
+./gradlew build
+```
+
+Сгенерированные файлы записываются в `build/generated/volan` (или по пути, заданному в `output`). Эти файлы — артефакты сборки, не коммитьте их в систему контроля версий.
+
+<Tip>
+  Добавьте `build/generated/volan/` в свой `.gitignore`, чтобы сгенерированные источники никогда не попадали в репозиторий случайно.
+</Tip>
