@@ -1,0 +1,334 @@
+---
+title: "Иерархия исключений Volan и обработка ошибок"
+sidebarTitle: "Исключения"
+description: "Справочник по всем типам исключений рантайма Volan, включая условия броска, свойства и рекомендуемые паттерны обработки."
+---
+
+Рантайм Volan сообщает об ошибках через структурированную иерархию исключений с корнем в `VolanException`. Поскольку все исключения расширяют `RuntimeException`, вы никогда не обязаны объявлять `throws`, но лучше ловить конкретные подтипы на подходящих границах, а не общий `VolanException`.
+
+---
+
+## Обзор иерархии
+
+```text
+RuntimeException
+└── VolanException
+    ├── VolanNotFoundException
+    ├── VolanRelationNotLoadedException
+    ├── VolanFieldNotSelectedException
+    ├── VolanAggregateNotAskedException
+    ├── VolanConfigurationException
+    ├── VolanUnsupportedException
+    ├── VolanUniqueConstraintException
+    ├── VolanForeignKeyException
+    ├── VolanConstraintException
+    ├── VolanConnectionException
+    ├── VolanTimeoutException
+    ├── VolanTransactionException
+    ├── VolanQueryException
+    ├── VolanValidationException
+    ├── VolanMappingException
+    ├── VolanSchemaException
+    └── VolanGenerationException
+```
+
+---
+
+## Исключения доступа к данным
+
+### VolanNotFoundException
+
+Бросается, когда запрос, ожидающий ровно один результат — `findFirstOrThrow`, `findUniqueOrThrow`, `update` или `delete` — не находит подходящей строки.
+
+| Свойство | Тип | Описание |
+| --- | --- | --- |
+| `model` | `String` | Имя модели, к которой был запрос |
+
+<CodeGroup>
+
+```kotlin Kotlin
+try {
+    val user = db.user.findUniqueOrThrow {
+        where { id eq userId }
+    }
+} catch (e: VolanNotFoundException) {
+    // e.model == "User"
+    throw ResponseStatusException(HttpStatus.NOT_FOUND, "${e.model} not found")
+}
+```
+
+```java Java
+try {
+    User user = db.user().findUniqueOrThrow(q ->
+        q.where(w -> w.id().eq(userId))
+    );
+} catch (VolanNotFoundException e) {
+    throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getModel() + " not found");
+}
+```
+
+</CodeGroup>
+
+<Tip>
+  Предпочитайте `findUnique` (возвращает `null` при отсутствии), когда отсутствие нормально, и ставьте `findUniqueOrThrow` только там, где отсутствие записи — действительно исключительная ситуация.
+</Tip>
+
+---
+
+### VolanUniqueConstraintException
+
+Бросается, когда `INSERT` или `UPDATE` нарушает уникальный индекс. Исключение несёт имя ограничения, если база его сообщает.
+
+| Свойство | Тип | Описание |
+| --- | --- | --- |
+| `constraint` | `String?` | Имя ограничения (например, `User_email_key`) или `null` |
+
+<CodeGroup>
+
+```kotlin Kotlin
+try {
+    val user = db.user.create {
+        data {
+            email = "alice@example.com"
+        }
+    }
+} catch (e: VolanUniqueConstraintException) {
+    logger.warn("Unique violation on {}", e.constraint)
+    throw DuplicateEmailException()
+}
+```
+
+```java Java
+try {
+    User user = db.user().create(c ->
+        c.data(d -> d.email("alice@example.com"))
+    );
+} catch (VolanUniqueConstraintException e) {
+    logger.warn("Unique violation on {}", e.getConstraint());
+    throw new DuplicateEmailException();
+}
+```
+
+</CodeGroup>
+
+---
+
+### VolanForeignKeyException
+
+Бросается при нарушении внешнего ключа — например, вставка строки, ссылающейся на несуществующего родителя, или удаление родителя, у которого есть дети при `onDelete: Restrict`.
+
+| Свойство | Тип | Описание |
+| --- | --- | --- |
+| `constraint` | `String?` | Имя ограничения или `null` |
+
+---
+
+### VolanConstraintException
+
+Бросается, когда запись нарушает check-ограничение или not-null, которое нельзя свести к более конкретному типу. `VolanUniqueConstraintException` и `VolanForeignKeyException` — отдельные ровняе исключения.
+
+---
+
+### VolanTransactionException
+
+Бросается, когда транзакция падает на уровне базы. Свойство `retryable`: если `true`, ошибка вызвана конфликтом сериализации и повторение с той же логикой может успеть.
+
+| Свойство | Тип | Описание |
+| --- | --- | --- |
+| `retryable` | `Boolean` | `true`, если транзакцию можно безопасно повторить |
+
+<CodeGroup>
+
+```kotlin Kotlin
+suspend fun createOrderWithRetry(input: OrderInput): Order {
+    repeat(3) { attempt ->
+        try {
+            return db.transaction {
+                val order = order.create { data { /* … */ } }
+                orderLine.createMany { data(input.lines) }
+                order
+            }
+        } catch (e: VolanTransactionException) {
+            if (!e.retryable || attempt == 2) throw e
+            delay(50L * (attempt + 1))
+        }
+    }
+    error("unreachable")
+}
+```
+
+```java Java
+Order createOrderWithRetry(OrderInput input) throws InterruptedException {
+    for (int attempt = 0; attempt < 3; attempt++) {
+        try {
+            return db.transaction(tx -> {
+                Order order = tx.order().create(c -> c.data(/* … */));
+                tx.orderLine().createMany(c -> c.data(input.getLines()));
+                return order;
+            });
+        } catch (VolanTransactionException e) {
+            if (!e.isRetryable() || attempt == 2) throw e;
+            Thread.sleep(50L * (attempt + 1));
+        }
+    }
+    throw new IllegalStateException("unreachable");
+}
+```
+
+</CodeGroup>
+
+<Warning>
+  Повторяйте только при `retryable == true`. Не-retryable `VolanTransactionException` означает постоянный сбой.
+</Warning>
+
+---
+
+### VolanQueryException
+
+Общие ошибки выполнения запроса, не попадающие в более конкретные категории (например, SQL-синтаксическая ошибка в raw-запросе или неожиданная ошибка драйвера).
+
+---
+
+### VolanValidationException
+
+Бросается до отправки запроса в базу, когда обязательное поле не задано в `create`/`update`, или спецификация записи структурно неверна.
+
+---
+
+### VolanConnectionException
+
+Бросается, когда Volan не может получить соединение из пула — обычно база недоступна или пул исчерпан.
+
+---
+
+### VolanTimeoutException
+
+Бросается, когда получение соединения или выполнение запроса превышает настроенный таймаут.
+
+---
+
+## Исключения-стражи ленивого доступа
+
+### VolanRelationNotLoadedException
+
+Бросается при обращении к связи, которая не была включена в `include {}`.
+
+| Свойство | Тип | Описание |
+| --- | --- | --- |
+| `model` | `String` | Имя модели |
+| `relation` | `String` | Имя поля связи |
+
+```kotlin
+// Запрос без include posts
+val user = db.user.findUnique { where { id eq 1 } }
+
+// ❌ бросает VolanRelationNotLoadedException("User", "posts")
+println(user.posts)
+
+// ✅ включаем связь
+val userWithPosts = db.user.findUnique {
+    where { id eq 1 }
+    include { posts() }
+}
+println(userWithPosts.posts)
+```
+
+<Note>
+  В отличие от lazy loading в Hibernate, Volan никогда не выполняет тихий дополнительный запрос. Обращение к незагруженной связи всегда падает быстро, исключая N\+1.
+</Note>
+
+---
+
+### VolanFieldNotSelectedException
+
+Бросается, когда вы обращаетесь к полю проекции, которое не было указано в `select {}`.
+
+| Свойство | Тип | Описание |
+| --- | --- | --- |
+| `model` | `String` | Имя модели |
+| `field` | `String` | Имя поля |
+
+```kotlin
+val partial = db.user.findUnique {
+    where { id eq 1 }
+    select { id(); email() }
+}
+
+// ❌ бросает VolanFieldNotSelectedException("User", "name")
+println(partial.name)
+```
+
+---
+
+### VolanAggregateNotAskedException
+
+Бросается, когда вы обращаетесь к агрегатному свойству (например, `_count`, `_sum`), которое не запрашивалось.
+
+| Свойство | Тип | Описание |
+| --- | --- | --- |
+| `alias` | `String` | Алиас агрегата |
+
+---
+
+### VolanMappingException
+
+Бросается, когда строку базы нельзя сопоставить сгенерированному классу — обычно колонка-enum содержит значение, которого нет в схеме, или обязательная колонка равна `NULL`.
+
+---
+
+## Исключения конфигурации и инструментов
+
+### VolanConfigurationException
+
+Бросается при построении клиента, когда конфигурация билдера некорректна — например, URL отсутствует или опции конфликтуют.
+
+```kotlin
+// Падает сразу на старте с VolanConfigurationException
+val db = Volan.builder()
+    // .url("…")  ← забыли
+    .build()
+```
+
+<Tip>
+  Ловите `VolanConfigurationException` в стартовой последовательности приложения и выводите как фатальную ошибку сразу, а не откладывайте до первого запроса.
+</Tip>
+
+---
+
+### VolanUnsupportedException
+
+Бросается, когда вы вызываете возможность, распознаваемую API, но ещё не реализованную в текущей версии Volan.
+
+---
+
+### VolanSchemaException
+
+Бросается компилятором схемы, когда в `.volan` есть ошибки парсинга или валидации. Содержит полный список `Diagnostic` (см. [Коды ошибок](/ru/reference/error-codes)).
+
+---
+
+### VolanGenerationException
+
+Бросается генератором кода, когда он не может произвести корректный вывод из корректной схемы. Редко; обычно баг генератора — сообщите с фрагментом схемы, вызвавшим падение.
+
+---
+
+## Общие рекомендации по обработке
+
+<CardGroup cols={2}>
+  <Card title="Ловите конкретные подтипы" icon="bullseye">
+    Всегда ловите максимально конкретный тип, который можете осмысленно обработать. `VolanException` на внешней границе — ок для логирования, но внутренние catch — точечные.
+  </Card>
+
+  <Card title="Не глушите конфигурационные ошибки" icon="circle-xmark">
+    `VolanConfigurationException` и `VolanSchemaException` — ошибки программиста, пусть они падают на старте.
+  </Card>
+
+  <Card title="Повторяйте только конфликты сериализации" icon="rotate">
+    `VolanTransactionException` с `retryable == true` — единственное исключение, которое безопасно повторять автоматически. Добавайте jitter и лимит попыток.
+  </Card>
+
+  <Card title="Ленивые исключения — баги" icon="bug">
+    `VolanRelationNotLoadedException` и `VolanFieldNotSelectedException` — это ошибки программиста. Исправьте запрос, а не ловите в продакшене.
+  </Card>
+</CardGroup>

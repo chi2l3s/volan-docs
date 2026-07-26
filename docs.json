@@ -139,7 +139,11 @@
               },
               {
                 "group": "Справочник",
-                "pages": []
+                "pages": [
+                  "ru/reference/error-codes",
+                  "ru/reference/exceptions",
+                  "ru/reference/comparison"
+                ]
               }
             ]
           }
